@@ -1,0 +1,12 @@
+.godot/
+.import/
+*.import
+export_presets.cfg
+.DS_Store
+
+# Node (MCP shim)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*

@@ -1,0 +1,19 @@
+{
+  "name": "godot-agent-tools-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MCP server that bridges coding agents to the Godot Agent Tools editor plugin.",
+  "main": "server.mjs",
+  "bin": { "godot-agent-tools-mcp": "server.mjs" },
+  "files": ["server.mjs", "README.md"],
+  "keywords": ["godot", "mcp", "model-context-protocol", "ai", "agent", "claude", "gamedev"],
+  "author": "Blake Bukowsky",
+  "license": "MIT",
+  "homepage": "https://github.com/BlakeBukowsky/GodotTools",
+  "repository": { "type": "git", "url": "git+https://github.com/BlakeBukowsky/GodotTools.git" },
+  "bugs": { "url": "https://github.com/BlakeBukowsky/GodotTools/issues" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

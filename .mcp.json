@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "godot-agent-tools": {
+      "command": "node",
+      "args": ["mcp/server.mjs"]
+    }
+  }
+}
