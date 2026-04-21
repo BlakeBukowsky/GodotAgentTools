@@ -205,13 +205,16 @@ static func rename(params: Dictionary) -> Dictionary:
 	if move_err != OK:
 		return _err(-32001, "move failed (%d)" % move_err)
 
-	# Move .uid sidecar so UIDs continue resolving to the new path.
+	# Move .uid sidecar so UIDs continue resolving to the new path. Best-effort —
+	# sidecar failures don't block the main rename that already succeeded.
 	var from_uid := from_path + ".uid"
 	if FileAccess.file_exists(from_uid):
+		@warning_ignore("return_value_discarded")
 		DirAccess.rename_absolute(from_uid, to_path + ".uid")
 	# Move .import sidecar for imported assets (textures, audio, etc.).
 	var from_import := from_path + ".import"
 	if FileAccess.file_exists(from_import):
+		@warning_ignore("return_value_discarded")
 		DirAccess.rename_absolute(from_import, to_path + ".import")
 
 	var files_updated: Array = []

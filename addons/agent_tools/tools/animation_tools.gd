@@ -83,6 +83,7 @@ static func add_animation(params: Dictionary) -> Dictionary:
 
 	var anim := Animation.new()
 	anim.length = length
+	@warning_ignore("return_value_discarded")
 	lib.add_animation(anim_name, anim)
 	EditorInterface.mark_scene_as_unsaved()
 	return _ok({"name": anim_name, "library": library_name, "length": length})

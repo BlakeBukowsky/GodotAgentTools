@@ -1,2 +1,16 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalize line endings for all text files. Works across Windows/macOS/Linux
+# contributors without fighting CRLF/LF diffs.
+* text=auto eol=lf
+
+# Dev-only files excluded from the Asset Library download ZIP (`git archive`).
+# End users install `addons/agent_tools/` into their own project; they don't
+# need our dev scaffolding, MCP shim (that's on npm), or test harness.
+/mcp                  export-ignore
+/tests                export-ignore
+/CONTRIBUTING.md      export-ignore
+/CHANGELOG.md         export-ignore
+/.mcp.json            export-ignore
+/.github              export-ignore
+/.gitignore           export-ignore
+/.gitattributes       export-ignore
+/project.godot        export-ignore
