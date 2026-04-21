@@ -1,74 +1,147 @@
 # Godot Agent Tools
 
-Exposes Godot editor operations — scene edits, signal wiring, resource creation, reference validation, input map management, headless test runs — over [MCP](https://modelcontextprotocol.io) so coding agents can work inside a Godot project through the editor's real APIs instead of hand-editing `.tscn` / `.tres` / `project.godot` as text.
+Let coding agents (Claude Code, Cursor, Cline, Windsurf, Claude Desktop, etc.) work inside your Godot project safely — editing scenes, wiring signals, creating resources, validating references, and running headless smoke tests through the editor's real APIs instead of hand-editing `.tscn` / `.tres` / `project.godot` as text.
 
-## Why
+**32 tools** across 11 namespaces. Works with any MCP-capable agent. Godot 4.3+.
 
-`.tscn`, `.tres`, and `project.godot` are Godot-specific text formats with fragile invariants: UIDs, sub-resource IDs, inherited-scene overrides, signal `[connection]` blocks, and autoload metadata. An agent editing these as plain text will silently corrupt them. This plugin routes every write through Godot's own `PackedScene` / `ResourceSaver` / `ClassDB` / `ResourceUID` APIs, so UIDs stay stable, IDs stay unique, and scenes survive round-tripping.
+---
 
-## Components
+## The 2-minute install
 
-1. **Godot addon** (`addons/agent_tools/`) — editor plugin that exposes 32 tools over a localhost TCP JSON-RPC socket (default `127.0.0.1:9920`).
-2. **MCP shim** (`mcp/server.mjs`) — Node.js process that speaks MCP to your agent and forwards tool calls to the running Godot editor. Works with any MCP-capable client (Claude Code, Claude Desktop, Cursor, Cline, Windsurf, Continue, Zed, etc.).
+1. **Install the addon in your Godot project.**
+   - *Project → AssetLib* tab → search **Agent Tools** → *Download* → *Install*
+   - *Project → Project Settings → Plugins* → tick **Agent Tools**
+2. **Point your agent at it.** [Pick your agent below](#configure-your-agent) and paste the snippet into the right config file.
+3. **Restart your agent** and call `scene_current` to sanity-check. Done.
 
-The addon is pure GDScript — no native extensions, no build step. The shim is ~200 lines of plain Node.
+No Node.js install required — `npx` downloads the MCP shim on first use.
+
+---
+
+## Why this exists
+
+`.tscn`, `.tres`, and `project.godot` are Godot-specific text formats with fragile invariants: UIDs, sub-resource IDs, inherited-scene overrides, signal `[connection]` blocks, autoload metadata. An agent editing these as plain text will silently corrupt them. This plugin routes every write through Godot's own `PackedScene` / `ResourceSaver` / `ClassDB` / `ResourceUID` APIs, so UIDs stay stable, IDs stay unique, and scenes survive round-tripping.
+
+---
 
 ## Requirements
 
-- Godot **4.3+** (developed against 4.6)
-- Node.js **18+** (for the MCP shim)
-- Any MCP-capable coding agent
+- **Godot 4.3+** (developed and tested on 4.6)
+- **Node.js 18+** — only needed the first time `npx` runs the MCP shim; no manual install
+- Any **MCP-capable agent**
+
+---
 
 ## Install
 
 ### Addon (per Godot project)
 
-Copy `addons/agent_tools/` into your project's `addons/` directory, then:
+**Asset Library (recommended):**
 
-1. Open the project in Godot
-2. *Project → Project Settings → Plugins* → tick **Agent Tools**
-3. Confirm the Output panel shows `[agent_tools] listening on 127.0.0.1:9920`
+1. Open your project in Godot
+2. Click the *AssetLib* tab at the top of the editor
+3. Search for **Agent Tools**, hit *Download* → *Install*
+4. *Project Settings → Plugins* → enable **Agent Tools**
 
-### MCP shim (once per machine)
+**Manual (if the Asset Library entry is unavailable):**
 
 ```bash
-git clone <this-repo>
-cd <this-repo>/mcp
-npm install
+# From this repo:
+cp -r addons/agent_tools /path/to/your/godot/project/addons/
 ```
 
-## Configure your MCP client
+Then enable in *Project Settings → Plugins*.
 
-Every client ends up running `node /abs/path/to/mcp/server.mjs`.
+### MCP shim
+
+**No install.** The shim is published to npm as [`godot-agent-tools-mcp`](https://www.npmjs.com/package/godot-agent-tools-mcp). The config snippets below use `npx -y godot-agent-tools-mcp`, which fetches and caches on first run.
+
+---
+
+## Configure your agent
+
+Pick your agent below. Every snippet is the same two lines (`"command": "npx"` + `"args": ["-y", "godot-agent-tools-mcp"]`) — only the **file path** differs.
+
+Two scopes to choose from:
+- **Project-scoped**: config lives in your Godot project; only that project sees the tools.
+- **User-scoped**: config lives in your home directory; every project on the machine sees the tools.
+
 
 <details>
-<summary><b>Claude Code</b> — project-scoped</summary>
+<summary><b>Claude Code</b></summary>
 
-`.mcp.json` at your project root:
-
+**Project-scoped** — create `.mcp.json` at your project root with:
 ```json
 {
   "mcpServers": {
     "godot-agent-tools": {
-      "command": "node",
-      "args": ["/abs/path/to/mcp/server.mjs"]
+      "command": "npx",
+      "args": ["-y", "godot-agent-tools-mcp"]
     }
   }
 }
 ```
+
+**User-scoped** (works in every project) — add the same `godot-agent-tools` entry under `mcpServers` in:
+- macOS / Linux: `~/.claude.json`
+- Windows: `%USERPROFILE%\.claude.json`
+
+Restart Claude Code after editing.
 </details>
 
 <details>
 <summary><b>Claude Desktop</b></summary>
 
-Edit `claude_desktop_config.json` (in your OS config dir):
+Edit the config file for your OS:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux**: `~/.config/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "godot-agent-tools": {
-      "command": "node",
-      "args": ["/abs/path/to/mcp/server.mjs"]
+      "command": "npx",
+      "args": ["-y", "godot-agent-tools-mcp"]
+    }
+  }
+}
+```
+
+Quit and relaunch Claude Desktop (the tray icon; not just the window).
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+**Project-scoped**: `.cursor/mcp.json` at the project root.
+**User-scoped**: `~/.cursor/mcp.json`.
+
+```json
+{
+  "mcpServers": {
+    "godot-agent-tools": {
+      "command": "npx",
+      "args": ["-y", "godot-agent-tools-mcp"]
+    }
+  }
+}
+```
+
+Reload Cursor (*Cmd/Ctrl+Shift+P → "Reload Window"*).
+</details>
+
+<details>
+<summary><b>Windsurf</b></summary>
+
+File: `~/.codeium/windsurf/mcp_config.json`
+
+```json
+{
+  "mcpServers": {
+    "godot-agent-tools": {
+      "command": "npx",
+      "args": ["-y", "godot-agent-tools-mcp"]
     }
   }
 }
@@ -76,12 +149,82 @@ Edit `claude_desktop_config.json` (in your OS config dir):
 </details>
 
 <details>
-<summary><b>Cursor / Windsurf / Cline / VS Code / Continue / Zed</b></summary>
+<summary><b>Cline (VS Code extension)</b></summary>
 
-Same shape — point each client's MCP config at `node /abs/path/to/mcp/server.mjs`. Consult the client docs for the correct config path.
+Open the Cline sidebar → click the *MCP Servers* icon → *Configure MCP Servers*. That opens the settings file; add:
+
+```json
+{
+  "mcpServers": {
+    "godot-agent-tools": {
+      "command": "npx",
+      "args": ["-y", "godot-agent-tools-mcp"]
+    }
+  }
+}
+```
 </details>
 
-### Environment variables
+<details>
+<summary><b>VS Code (native MCP support)</b></summary>
+
+**Project-scoped**: `.vscode/mcp.json` at the project root.
+**User-scoped**: in VS Code `settings.json` under `"mcp.servers"`.
+
+```json
+{
+  "servers": {
+    "godot-agent-tools": {
+      "command": "npx",
+      "args": ["-y", "godot-agent-tools-mcp"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Continue.dev</b></summary>
+
+File: `~/.continue/config.json`. Add under `experimental.modelContextProtocolServers`:
+
+```json
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "godot-agent-tools-mcp"]
+        }
+      }
+    ]
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Zed</b></summary>
+
+In Zed's `settings.json` (*Cmd/Ctrl+,*):
+
+```json
+{
+  "context_servers": {
+    "godot-agent-tools": {
+      "command": {
+        "path": "npx",
+        "args": ["-y", "godot-agent-tools-mcp"]
+      }
+    }
+  }
+}
+```
+</details>
+
+### Environment variables (shim side, optional)
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -89,13 +232,24 @@ Same shape — point each client's MCP config at `node /abs/path/to/mcp/server.m
 | `GODOT_AGENT_PORT` | `9920` | Port the addon listens on |
 | `GODOT_AGENT_TIMEOUT_MS` | `15000` | Per-call timeout |
 
+---
+
+## Verify
+
+1. Open your Godot project in the editor; confirm the Output panel shows:
+   ```
+   [agent_tools] listening on 127.0.0.1:9920
+   ```
+2. In your agent, run `scene_current` — should return `{"open": true, ...}` if a scene is open, or `{"open": false}` otherwise.
+3. Run `refs_validate_project` — should return `{"checked": N, "issues": []}` (give or take — issues are real findings).
+
+If either of those returns an error, see [Troubleshooting](#troubleshooting).
+
+---
+
 ## Usage
 
-1. Open your Godot project in the editor with the addon enabled.
-2. Start a session in your MCP client.
-3. The agent can now invoke tools like `scene_add_node`, `signal_connect`, `refs_find_usages`, `run_scene_headless`.
-
-Typical agent-driven flow for "create a main scene with a player":
+A typical agent-driven flow ("create a main scene with a player"):
 
 ```
 scene_new           path=res://Main.tscn root_type=Node2D
@@ -106,6 +260,8 @@ scene_save
 refs_validate_project
 run_scene_headless  path=res://Main.tscn quit_after_seconds=1
 ```
+
+---
 
 ## Tool catalog
 
@@ -125,19 +281,21 @@ run_scene_headless  path=res://Main.tscn quit_after_seconds=1
 | `run` | `scene_headless` |
 | `editor` | `reload_filesystem` |
 
-Each tool's full JSON schema is declared in [`mcp/server.mjs`](mcp/server.mjs).
+Full JSON schemas live in [`mcp/server.mjs`](mcp/server.mjs).
 
 ### Highlights
 
-- **`refs.find_usages`** searches for both a resource's path form and its `uid://` form, so it catches UID-indirected references a plain grep misses.
-- **`refs.rename`** moves a file, its `.uid` and `.import` sidecars, and rewrites every path-form reference (including `project.godot` autoload entries). Supports `dry_run`.
+- **`refs.find_usages`** searches for both the path form and the `uid://` form of a target, catching UID-indirected references a plain grep would miss.
+- **`refs.rename`** moves a file + its `.uid` and `.import` sidecars, and rewrites every path-form reference (including `project.godot` autoload entries). Supports `dry_run`.
 - **`signal.connect`** validates that the signal exists on the source, the method exists on the target, and arity matches — before persisting the connection.
-- **`docs.class_ref`** returns a class's methods / properties / signals / constants from `ClassDB` so agents plan against real API instead of guessing.
+- **`docs.class_ref`** returns a class's methods / properties / signals / constants straight from `ClassDB` so agents plan against real API, not hallucinated API.
 - **`run.scene_headless`** spawns a child `godot --headless` process and returns exit code + combined stdout/stderr — the only way to catch runtime errors the static validator can't see.
+
+---
 
 ## Skipping MCP — raw TCP protocol
 
-The addon's TCP server speaks line-delimited JSON-RPC. Useful for debugging or non-MCP clients.
+The addon's TCP server speaks line-delimited JSON-RPC. Useful for scripting or non-MCP clients.
 
 Request:
 ```json
@@ -154,34 +312,56 @@ Error:
 {"id": 1, "error": {"code": -32001, "message": "no scene open"}}
 ```
 
-Quick test from PowerShell (no deps):
+Quick probe from PowerShell (no deps):
 
 ```powershell
 $c=[Net.Sockets.TcpClient]::new('127.0.0.1',9920); $s=$c.GetStream(); $w=[IO.StreamWriter]::new($s); $r=[IO.StreamReader]::new($s); $w.WriteLine('{"id":1,"method":"scene.current","params":{}}'); $w.Flush(); $r.ReadLine(); $c.Close()
 ```
 
+---
+
 ## Development
 
-Contributing a new tool takes three edits:
+If you're hacking on the plugin itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for conventions. Short version:
 
-1. Add a `static func` to the relevant module in `addons/agent_tools/tools/` (returns `{"data": ...}` or `{"error": {"code", "message"}}`).
-2. Add a dispatch line to `addons/agent_tools/registry.gd`.
-3. Add an MCP schema entry to `mcp/server.mjs`.
+1. Adding a tool = three edits (tool file, `registry.gd`, `mcp/server.mjs`).
+2. After editing GDScript, **toggle the plugin** off/on in *Project Settings → Plugins* — hot-reload doesn't always refresh preloaded modules.
+3. After editing `server.mjs`, **reload the MCP connection** in your agent — the tool list is cached at startup.
 
-After editing GDScript, toggle the plugin off/on in *Project Settings → Plugins* — Godot's hot-reload doesn't always refresh preloaded modules. After editing `server.mjs`, reload the MCP connection in your agent.
+To run the shim from source (instead of npm) for dev:
 
-See [`AGENTS.md`](AGENTS.md) for more conventions (if present).
+```bash
+git clone https://github.com/BlakeBukowsky/GodotTools.git
+cd GodotTools/mcp
+npm install
+# Then point your agent's MCP config at:
+# "command": "node", "args": ["/abs/path/to/GodotTools/mcp/server.mjs"]
+```
+
+---
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| `Godot editor not reachable on 127.0.0.1:9920` | Editor isn't running, or plugin isn't enabled. Confirm via the Output panel message. |
-| Tool returns `method not found: <name>` | Registry doesn't know about it — toggle the plugin to reload. |
-| Every tool in a module returns `null` | Parse error in that module's `.gd` file — toggle and check Godot's Output panel for the error. |
-| Port already in use | Another process holds `9920`. Set `GODOT_AGENT_PORT` in both the addon (edit `plugin.gd`) and the shim's env. |
-| MCP client shows old tool list | Shim caches `TOOLS` at startup; restart the MCP connection after editing `server.mjs`. |
+| Agent can't see any `godot_*` or `scene_*` tools | MCP config not picked up. Check that the snippet landed in the right file for your agent (see [config table](#configure-your-agent)), then restart the agent. |
+| `Godot editor not reachable on 127.0.0.1:9920` | Editor isn't running, or the plugin isn't enabled. Confirm the `[agent_tools] listening...` line in the Output panel. |
+| Tool call returns `method not found: <name>` | Either the plugin is out of date (update the addon) or the registry cached the old dispatch table — toggle the plugin. |
+| Every tool in a module returns `null` | Parse error in that module's `.gd` file. Toggle the plugin and watch the Output panel for the actual error. |
+| `npx` errors with `ENOTFOUND registry.npmjs.org` | Network / firewall issue. Try `npx -y godot-agent-tools-mcp` manually from a terminal first to confirm. |
+| Port `9920` already in use | Another process has it. Edit `plugin.gd`'s `DEFAULT_PORT` constant and set `GODOT_AGENT_PORT` in your agent's MCP env. |
+
+---
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+## Links
+
+- [Godot Asset Library entry](https://godotengine.org/asset-library) (search "Agent Tools")
+- [npm: godot-agent-tools-mcp](https://www.npmjs.com/package/godot-agent-tools-mcp)
+- [Issues](https://github.com/BlakeBukowsky/GodotTools/issues)
+- [Model Context Protocol](https://modelcontextprotocol.io)
