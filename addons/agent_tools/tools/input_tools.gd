@@ -148,9 +148,13 @@ static func remove_action(params: Dictionary) -> Dictionary:
 
 
 static func _build_event(spec: Dictionary) -> InputEvent:
+	# device defaults to -1 (ALL_DEVICES) matching the editor's "All Devices" default.
+	# For local multiplayer bind device=0, device=1, etc. to distinguish controllers.
+	var device: int = int(spec.get("device", -1))
 	match spec.get("type", ""):
 		"key":
 			var e := InputEventKey.new()
+			e.device = device
 			var kc_raw = spec.get("keycode", "")
 			var keycode := 0
 			if kc_raw is int:
@@ -166,14 +170,46 @@ static func _build_event(spec: Dictionary) -> InputEvent:
 			return e
 		"mouse_button":
 			var e := InputEventMouseButton.new()
+			e.device = device
 			e.button_index = int(spec.get("button_index", 1))
 			return e
 		"joy_button":
 			var e := InputEventJoypadButton.new()
+			e.device = device
 			e.button_index = int(spec.get("button_index", 0))
+			return e
+		"joy_motion":
+			# axis accepts int 0..5 or one of:
+			#   "left_x" / "left_y" / "right_x" / "right_y" / "trigger_left" / "trigger_right"
+			# axis_value: -1.0 (full negative) to 1.0 (full positive); sign picks the direction
+			# that triggers the action.
+			var e := InputEventJoypadMotion.new()
+			e.device = device
+			e.axis = _coerce_axis(spec.get("axis", 0))
+			e.axis_value = float(spec.get("axis_value", 1.0))
 			return e
 		_:
 			return null
+
+
+static func _coerce_axis(v) -> int:
+	if v is int:
+		return v
+	if v is String:
+		match v:
+			"left_x":
+				return JOY_AXIS_LEFT_X
+			"left_y":
+				return JOY_AXIS_LEFT_Y
+			"right_x":
+				return JOY_AXIS_RIGHT_X
+			"right_y":
+				return JOY_AXIS_RIGHT_Y
+			"trigger_left":
+				return JOY_AXIS_TRIGGER_LEFT
+			"trigger_right":
+				return JOY_AXIS_TRIGGER_RIGHT
+	return 0
 
 
 static func _describe_event(e) -> Dictionary:
@@ -183,13 +219,19 @@ static func _describe_event(e) -> Dictionary:
 			"type": "key",
 			"keycode": OS.get_keycode_string(kc),
 			"physical": e.physical_keycode != 0,
+			"device": e.device,
 		}
 	if e is InputEventMouseButton:
-		return {"type": "mouse_button", "button_index": e.button_index}
+		return {"type": "mouse_button", "button_index": e.button_index, "device": e.device}
 	if e is InputEventJoypadButton:
-		return {"type": "joy_button", "button_index": e.button_index}
+		return {"type": "joy_button", "button_index": e.button_index, "device": e.device}
 	if e is InputEventJoypadMotion:
-		return {"type": "joy_motion", "axis": e.axis, "axis_value": e.axis_value}
+		return {
+			"type": "joy_motion",
+			"axis": e.axis,
+			"axis_value": e.axis_value,
+			"device": e.device,
+		}
 	return {"type": "unknown", "class": (e as Object).get_class() if e else "null"}
 
 

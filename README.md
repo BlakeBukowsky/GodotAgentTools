@@ -2,7 +2,7 @@
 
 Let coding agents (Claude Code, Cursor, Cline, Windsurf, Claude Desktop, etc.) work inside your Godot project safely — editing scenes, wiring signals, creating resources, validating references, and running headless smoke tests through the editor's real APIs instead of hand-editing `.tscn` / `.tres` / `project.godot` as text.
 
-**43 tools** across 12 namespaces. Works with any MCP-capable agent. Godot 4.3+.
+**48 tools** across 13 namespaces. Works with any MCP-capable agent. Godot 4.3+.
 
 ---
 
@@ -265,14 +265,14 @@ run_scene_headless  path=res://Main.tscn quit_after_seconds=1
 
 ## Tool catalog
 
-**43 tools** across 12 namespaces:
+**48 tools** across 13 namespaces:
 
 | Namespace | Tools |
 |---|---|
-| `scene` | `new`, `open`, `current`, `save`, `inspect`, `add_node`, `remove_node`, `reparent`, `duplicate_node`, `set_property`, `get_property`, `instance_packed`, `capture_screenshot` |
+| `scene` | `new`, `open`, `current`, `save`, `inspect`, `add_node`, `build_tree`, `remove_node`, `reparent`, `duplicate_node`, `set_property`, `get_property`, `call_method`, `instance_packed`, `capture_screenshot` |
 | `signal` | `connect`, `disconnect`, `list` |
 | `script` | `create`, `attach` |
-| `resource` | `create`, `set_property` |
+| `resource` | `create`, `set_property`, `call_method` |
 | `refs` | `validate_project`, `find_usages`, `rename`, `rename_class` |
 | `project` | `get_setting`, `set_setting` |
 | `autoload` | `add`, `remove`, `list` |
@@ -280,7 +280,8 @@ run_scene_headless  path=res://Main.tscn quit_after_seconds=1
 | `animation` | `list`, `add_animation`, `remove_animation`, `add_value_track` |
 | `docs` | `class_ref` |
 | `fs` | `list` |
-| `run` | `scene_headless` |
+| `user_fs` | `read`, `list` |
+| `run` | `scene_headless` (supports scripted input + screenshot capture) |
 | `editor` | `reload_filesystem`, `save_all_scenes` |
 
 Full JSON schemas live in [`mcp/server.mjs`](mcp/server.mjs).
@@ -295,6 +296,8 @@ Full JSON schemas live in [`mcp/server.mjs`](mcp/server.mjs).
 - **`scene.capture_screenshot`** saves a PNG of the editor viewport (clean — no grid/gizmos) so agents can verify visual layout. Empty scenes render as the viewport background color.
 - **`refs.rename_class`** rewrites `class_name X` and every word-boundary reference across `.gd`/`.tscn`/`.tres`. Complements `refs.rename` (which is file-based).
 - **`animation.*`** manipulates `AnimationPlayer` resources — animations in `.tscn` text form are one of the least agent-friendly surfaces in Godot.
+- **`scene.build_tree`** collapses "build a 30-node UI" from dozens of `add_node` + `set_property` round trips into a single recursive spec. Atomic: full rollback on any failure.
+- **`scene.call_method` / `resource.call_method`** invoke any method with argument coercion — so helpers like `StyleBoxFlat.set_border_width_all(4)` don't force agents to write a `.gd` script just to call them.
 
 ---
 

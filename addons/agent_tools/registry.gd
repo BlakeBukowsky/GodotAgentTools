@@ -13,6 +13,7 @@ const InputTools := preload("res://addons/agent_tools/tools/input_tools.gd")
 const RunTools := preload("res://addons/agent_tools/tools/run_tools.gd")
 const FsTools := preload("res://addons/agent_tools/tools/fs_tools.gd")
 const AnimationTools := preload("res://addons/agent_tools/tools/animation_tools.gd")
+const UserFsTools := preload("res://addons/agent_tools/tools/user_fs_tools.gd")
 
 
 # Returns {"data": <any>} on success, {"error": {"code": int, "message": str}} on failure.
@@ -27,6 +28,8 @@ func dispatch(method: String, params: Dictionary) -> Dictionary:
 		"scene.reparent":         return SceneTools.reparent(params)
 		"scene.set_property":     return SceneTools.set_property(params)
 		"scene.get_property":     return SceneTools.get_property(params)
+		"scene.call_method":      return SceneTools.call_method(params)
+		"scene.build_tree":       return SceneTools.build_tree(params)
 		"scene.open":             return SceneTools.open_scene(params)
 		"scene.save":             return SceneTools.save_scene(params)
 		"scene.current":          return SceneTools.current(params)
@@ -39,6 +42,7 @@ func dispatch(method: String, params: Dictionary) -> Dictionary:
 		"script.attach":          return ScriptTools.attach(params)
 		"resource.create":        return ResourceTools.create(params)
 		"resource.set_property":  return ResourceTools.set_property(params)
+		"resource.call_method":   return ResourceTools.call_method(params)
 		"refs.validate_project":  return RefsTools.validate_project(params)
 		"refs.find_usages":       return RefsTools.find_usages(params)
 		"refs.rename":            return RefsTools.rename(params)
@@ -58,6 +62,8 @@ func dispatch(method: String, params: Dictionary) -> Dictionary:
 		"input_map.remove_event": return InputTools.remove_event(params)
 		"run.scene_headless":     return RunTools.scene_headless(params)
 		"fs.list":                return FsTools.list(params)
+		"user_fs.read":           return UserFsTools.read(params)
+		"user_fs.list":           return UserFsTools.list(params)
 		"animation.list":         return AnimationTools.list_animations(params)
 		"animation.add_animation": return AnimationTools.add_animation(params)
 		"animation.remove_animation": return AnimationTools.remove_animation(params)

@@ -1,6 +1,8 @@
 @tool
 extends RefCounted
 
+const Coerce := preload("res://addons/agent_tools/tools/_coerce.gd")
+
 # resource.create — create a new .tres file.
 # Params: {path, type, script?, properties?, overwrite?: false}
 # 'type' must be a built-in Resource subclass (StyleBoxFlat, Theme, Curve, etc.).
@@ -57,7 +59,7 @@ static func create(params: Dictionary) -> Dictionary:
 
 
 # resource.set_property — load a .tres, set one property, save it back.
-# Params: {path, property, value}
+# Params: {path, property, value} — same coercion as scene.set_property.
 static func set_property(params: Dictionary) -> Dictionary:
 	var path: String = params.get("path", "")
 	var property_name: String = params.get("property", "")
@@ -75,17 +77,80 @@ static func set_property(params: Dictionary) -> Dictionary:
 			break
 	if prop_info.is_empty():
 		return _err(-32602, "property not found on %s: %s" % [res.get_class(), property_name])
+	if int(prop_info.get("usage", 0)) & PROPERTY_USAGE_READ_ONLY:
+		return _err(-32602, "property '%s' on %s is read-only" % [property_name, res.get_class()])
 
-	var coerced = _coerce(params.get("value"), prop_info.type)
+	var coerced = Coerce.coerce(params.get("value"), prop_info.type)
 	if coerced is Dictionary and coerced.has("_error"):
 		return _err(-32602, coerced._error)
 
 	res.set(property_name, coerced)
+	var stored = res.get(property_name)
+	if coerced != null and stored == null and prop_info.type == TYPE_OBJECT:
+		return _err(-32001,
+			"property '%s' on %s was not accepted (assignment silently dropped — target expects a %s; passed value type didn't match)" %
+			[property_name, res.get_class(), prop_info.get("hint_string", "Resource")])
 	var save_err := ResourceSaver.save(res, path)
 	if save_err != OK:
 		return _err(-32001, "save failed: %d" % save_err)
 	EditorInterface.get_resource_filesystem().update_file(path)
-	return _ok({"path": path, "property": property_name, "value": res.get(property_name)})
+	return _ok({"path": path, "property": property_name, "value": Coerce.to_json(stored)})
+
+
+# resource.call_method — load a .tres, invoke a method, save, return the method's result.
+# Useful for helper methods that aren't properties — e.g. StyleBoxFlat.set_border_width_all(4)
+# or set_corner_radius_all(14). Args are coerced against the method's declared types.
+# Params: {path, method, args?: [], save?: true}
+static func call_method(params: Dictionary) -> Dictionary:
+	var path: String = params.get("path", "")
+	var method_name: String = params.get("method", "")
+	var args: Array = params.get("args", [])
+	var should_save: bool = params.get("save", true)
+	if path == "" or method_name == "":
+		return _err(-32602, "missing 'path' or 'method'")
+
+	var res := ResourceLoader.load(path)
+	if res == null:
+		return _err(-32001, "failed to load: %s" % path)
+	if not res.has_method(method_name):
+		return _err(-32602, "method not found: %s.%s" % [res.get_class(), method_name])
+
+	var coerced_args = _coerce_args(res, method_name, args)
+	if coerced_args is Dictionary:
+		return coerced_args  # error passthrough (same reason as scene.call_method: no type annotation)
+	var result = res.callv(method_name, coerced_args)
+
+	if should_save:
+		var save_err := ResourceSaver.save(res, path)
+		if save_err != OK:
+			return _err(-32001, "save failed: %d" % save_err)
+		EditorInterface.get_resource_filesystem().update_file(path)
+
+	return _ok({
+		"path": path,
+		"method": method_name,
+		"return": Coerce.to_json(result),
+		"saved": should_save,
+	})
+
+
+static func _coerce_args(obj: Object, method_name: String, args: Array):
+	var method_info: Dictionary = {}
+	for m in obj.get_method_list():
+		if m.name == method_name:
+			method_info = m
+			break
+	var arg_types: Array = method_info.get("args", [])
+	var out: Array = []
+	for i in args.size():
+		if i < arg_types.size():
+			var coerced = Coerce.coerce(args[i], arg_types[i].type)
+			if coerced is Dictionary and coerced.has("_error"):
+				return _err(-32602, "arg %d: %s" % [i, coerced._error])
+			out.append(coerced)
+		else:
+			out.append(args[i])
+	return out
 
 
 static func _apply_properties(res: Resource, props: Dictionary) -> Dictionary:
@@ -95,41 +160,11 @@ static func _apply_properties(res: Resource, props: Dictionary) -> Dictionary:
 	for key in props:
 		if not by_name.has(key):
 			return _err(-32602, "property not found on %s: %s" % [res.get_class(), key])
-		var coerced = _coerce(props[key], by_name[key].type)
+		var coerced = Coerce.coerce(props[key], by_name[key].type)
 		if coerced is Dictionary and coerced.has("_error"):
 			return _err(-32602, "property %s: %s" % [key, coerced._error])
 		res.set(key, coerced)
 	return {}
-
-
-static func _coerce(value, target_type: int):
-	match target_type:
-		TYPE_BOOL: return bool(value)
-		TYPE_INT: return int(value)
-		TYPE_FLOAT: return float(value)
-		TYPE_STRING, TYPE_STRING_NAME: return String(value)
-		TYPE_NODE_PATH: return NodePath(String(value))
-		TYPE_VECTOR2:
-			if value is Array and value.size() == 2:
-				return Vector2(value[0], value[1])
-			return {"_error": "Vector2 expects [x, y]"}
-		TYPE_VECTOR2I:
-			if value is Array and value.size() == 2:
-				return Vector2i(int(value[0]), int(value[1]))
-			return {"_error": "Vector2i expects [x, y]"}
-		TYPE_VECTOR3:
-			if value is Array and value.size() == 3:
-				return Vector3(value[0], value[1], value[2])
-			return {"_error": "Vector3 expects [x, y, z]"}
-		TYPE_COLOR:
-			if value is Array and (value.size() == 3 or value.size() == 4):
-				var a := float(value[3]) if value.size() == 4 else 1.0
-				return Color(value[0], value[1], value[2], a)
-			if value is String:
-				return Color(value)
-			return {"_error": "Color expects [r,g,b(,a)] or '#rrggbb(aa)'"}
-		_:
-			return value
 
 
 static func _ok(data) -> Dictionary:

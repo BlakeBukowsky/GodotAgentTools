@@ -125,7 +125,22 @@ const TOOLS = [
     name: "scene_set_property",
     method: "scene.set_property",
     description:
-      "Set a property on a node. Coerces JSON to Godot types: Vector2/3 from [x,y(,z)], Color from [r,g,b(,a)] or '#hex', NodePath from string.",
+      "Set a property on a node. JSON-to-Godot coercion: " +
+      "primitives (bool/int/float/String/StringName) pass through; " +
+      "NodePath from a string; " +
+      "Vector2/2i/3/3i/4/4i from [x, y(, z(, w))]; " +
+      "Rect2/2i from [x, y, width, height]; " +
+      "Quaternion from [x, y, z, w]; " +
+      "Color from [r, g, b(, a)] or '#rrggbb(aa)'; " +
+      "Transform2D from {origin: [x,y], rotation: radians, scale: [x,y], skew?}; " +
+      "Transform3D from {origin: [x,y,z], rotation: [x,y,z] (euler rad), scale: [x,y,z]}; " +
+      "Basis from {rotation, scale} (same shape as Transform3D minus origin); " +
+      "AABB from {position: [x,y,z], size: [x,y,z]}; " +
+      "Plane from {normal: [x,y,z], d: float}; " +
+      "Resource-typed properties (e.g. a CollisionShape2D's 'shape') auto-load from 'res://...' or 'uid://...' path strings; " +
+      "Packed{String,Int32,Int64,Float32,Float64,Vector2,Vector3,Color}Array from plain JSON arrays (element-wise coerced); " +
+      "other types pass through as-is. " +
+      "Returns an error if Godot drops the assignment (e.g. type mismatch) instead of echoing a misleading null.",
     inputSchema: {
       type: "object",
       required: ["node_path", "property"],
@@ -151,6 +166,56 @@ const TOOLS = [
     },
   },
   {
+    name: "scene_build_tree",
+    method: "scene.build_tree",
+    description:
+      "Build a subtree in the currently-edited scene in one call — recursive spec instead of dozens of scene_add_node + scene_set_property + script_attach round trips. " +
+      "Each tree entry: {type: 'ClassName' (required), name?: string, properties?: {propname: value, ...}, script?: 'res://...', children?: [entry, ...]}. " +
+      "Properties are coerced via the same rules as scene_set_property (Vectors from arrays, Resources auto-loaded from res:// paths, Transforms from {origin,rotation,scale}, etc.). " +
+      "Script is attached before properties so script-exported vars are settable in the same call. " +
+      "Atomic: if any entry fails (unknown type, missing property, coercion error, read-only slot, silent-null assignment), every node created during this call is rolled back — the scene is left in its pre-call state.",
+    inputSchema: {
+      type: "object",
+      required: ["nodes"],
+      properties: {
+        parent_path: { type: "string", default: ".", description: "Where to attach the new subtree. '.' = scene root." },
+        nodes: {
+          type: "array",
+          description: "Top-level tree entries (each may have arbitrarily nested children).",
+          items: {
+            type: "object",
+            required: ["type"],
+            properties: {
+              type: { type: "string", description: "Godot class name (e.g. 'PanelContainer', 'Button')." },
+              name: { type: "string" },
+              script: { type: "string", description: "Path to a .gd to attach before properties are applied." },
+              properties: { type: "object", additionalProperties: true, description: "Property → value pairs; values use the scene_set_property coercion rules." },
+              children: { type: "array", description: "Nested entries using the same shape as this one." },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: "scene_call_method",
+    method: "scene.call_method",
+    description:
+      "Invoke a method on a node in the currently-edited scene (e.g. a custom helper, or Godot built-ins like 'queue_free', 'add_to_group'). Args are coerced against the method's declared parameter types using the same rules as scene_set_property — including 'res://...' → Resource auto-load. Return value is JSON-native. Useful when properties alone can't express what you need — e.g. calling a script method with multiple args.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path", "method"],
+      properties: {
+        node_path: { type: "string" },
+        method: { type: "string" },
+        args: {
+          type: "array",
+          description: "Method arguments in order. Each is coerced based on the method's declared parameter type.",
+        },
+      },
+    },
+  },
+  {
     name: "scene_open",
     method: "scene.open",
     description: "Open a scene in the editor so subsequent scene.* calls target it.",
@@ -164,10 +229,11 @@ const TOOLS = [
     name: "scene_save",
     method: "scene.save",
     description:
-      "Save the currently-edited scene. Pass 'path' to save-as (rebinds the scene to that path).",
+      "Save the currently-edited scene. Pass 'path' to save-as (rebinds the scene to that path). " +
+      "REQUIRED for fresh scenes: if the scene has never been saved (no backing file), the tool returns an error rather than triggering Godot's native Save-As dialog (which would block the editor waiting for a human click). Always pass 'path' when you built the scene from scratch via scene.build_tree / scene.add_node without going through scene.new.",
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string", description: "Optional save-as target." } },
+      properties: { path: { type: "string", description: "Save-as target, required when the scene has no existing file." } },
     },
   },
   {
@@ -290,7 +356,8 @@ const TOOLS = [
   {
     name: "resource_set_property",
     method: "resource.set_property",
-    description: "Load a .tres, set one property, and save. Uses the same JSON-to-Godot coercion as scene_set_property.",
+    description:
+      "Load a .tres, set one property, and save. Same JSON-to-Godot coercion as scene_set_property: primitives, NodePath, Vector2/2i/3/3i/4/4i, Rect2/2i, Quaternion, Color, Transform2D/3D, Basis, AABB, Plane, Resource auto-load from 'res://'/'uid://' paths, and all Packed*Array variants. Errors on silently-dropped assignments.",
     inputSchema: {
       type: "object",
       required: ["path", "property"],
@@ -298,6 +365,22 @@ const TOOLS = [
         path: { type: "string" },
         property: { type: "string" },
         value: { description: "Value, JSON-native." },
+      },
+    },
+  },
+  {
+    name: "resource_call_method",
+    method: "resource.call_method",
+    description:
+      "Load a .tres, invoke a method on it, save, return the method's result. Rounds out what set_property can't express — e.g. StyleBoxFlat.set_border_width_all(4), set_corner_radius_all(14), Curve.add_point(...). Args coerce via the same rules as resource_set_property. Pass save:false to call without persisting (read-only method calls).",
+    inputSchema: {
+      type: "object",
+      required: ["path", "method"],
+      properties: {
+        path: { type: "string" },
+        method: { type: "string" },
+        args: { type: "array", description: "Method arguments in order, coerced per the method's parameter types." },
+        save: { type: "boolean", default: true, description: "Save the resource after the call. Set false for read-only method calls." },
       },
     },
   },
@@ -450,7 +533,11 @@ const TOOLS = [
     name: "input_map_add_event",
     method: "input_map.add_event",
     description:
-      "Attach an input event to an existing action. Event shapes: {type:'key', keycode:'A'|'Space'|...}, {type:'mouse_button', button_index:1|2|3}, {type:'joy_button', button_index:0..}.",
+      "Attach an input event to an existing action. Every event accepts an optional 'device' field (default -1 = all devices; set 0, 1, etc. for local-multiplayer device-specific bindings). Event shapes: " +
+      "{type:'key', keycode:'A'|'Space'|...}; " +
+      "{type:'mouse_button', button_index:1|2|3}; " +
+      "{type:'joy_button', button_index:0..}; " +
+      "{type:'joy_motion', axis:0..5 or 'left_x'|'left_y'|'right_x'|'right_y'|'trigger_left'|'trigger_right', axis_value:-1.0..1.0} (axis_value sign picks direction).",
     inputSchema: {
       type: "object",
       required: ["action", "event"],
@@ -460,10 +547,13 @@ const TOOLS = [
           type: "object",
           required: ["type"],
           properties: {
-            type: { type: "string", enum: ["key", "mouse_button", "joy_button"] },
+            type: { type: "string", enum: ["key", "mouse_button", "joy_button", "joy_motion"] },
+            device: { type: "integer", default: -1, description: "-1 = all devices (default); 0, 1, etc. bind a specific controller for local multiplayer." },
             keycode: { description: "For type='key': 'A', 'Space', 'F1', or int keycode." },
-            button_index: { type: "integer", description: "For mouse/joy button events." },
             physical: { type: "boolean", default: true, description: "For type='key': use physical keycode (recommended)." },
+            button_index: { type: "integer", description: "For mouse/joy button events." },
+            axis: { description: "For type='joy_motion': int 0..5 or 'left_x'|'left_y'|'right_x'|'right_y'|'trigger_left'|'trigger_right'." },
+            axis_value: { type: "number", description: "For type='joy_motion': -1.0 to 1.0; sign selects direction that triggers the action." },
           },
         },
       },
@@ -509,18 +599,104 @@ const TOOLS = [
     name: "run_scene_headless",
     method: "run.scene_headless",
     description:
-      "Run a scene in a headless child Godot process and return exit code plus combined stdout/stderr. BLOCKS the editor for the duration — use small quit_after_seconds (1-3) for smoke tests.",
+      "Run a scene in a child Godot process with structured output. " +
+      "MODES: BARE (default) runs --headless — fast, no window, good for 'does _ready not crash' checks. " +
+      "DRIVEN (anything beyond path + quit_after_seconds) runs under a wrapper driver that can inject scripted input, capture screenshots at multiple frames, dump final scene state as JSON, and use a deterministic RNG seed. " +
+      "SCREENSHOTS: when screenshot(s) requested the subprocess drops --headless and runs with a real (offscreen) window because Godot 4.6's headless mode uses a dummy renderer. Expect a brief window flash. " +
+      "STRUCTURED RESULTS: tool parses stdout for ERROR: / USER ERROR: / SCRIPT ERROR: / WARNING: / USER WARNING: lines and returns them as result.errors and result.warnings arrays so the agent doesn't have to regex the raw output. state_dump:true adds result.final_state with the scene tree + common properties. " +
+      "Event types for input_script: " +
+      "{frame, type: 'action_tap',     action}; " +
+      "{frame, type: 'action_press',   action, strength?}; " +
+      "{frame, type: 'action_release', action}; " +
+      "{frame, type: 'key',            keycode: 'Space'|int, pressed?: true}; " +
+      "{frame, type: 'mouse_click',    position: [x, y], button?: 1}; " +
+      "{frame, type: 'mouse_motion',   position: [x, y]}. " +
+      "BLOCKS the editor for the duration — use small quit_after_seconds (1-5).",
     inputSchema: {
       type: "object",
       required: ["path"],
       properties: {
         path: { type: "string", description: "Scene to run, e.g. 'res://Main.tscn'." },
-        quit_after_seconds: { type: "number", default: 2, description: "Converted to frames assuming 60 fps." },
+        quit_after_seconds: { type: "number", default: 2, description: "Converted to frames assuming 60 fps. In DRIVEN mode this is also the quit_frame the driver targets." },
         extra_args: {
           type: "array",
           items: { type: "string" },
           description: "Additional CLI args passed to the child godot process.",
         },
+        input_script: {
+          type: "array",
+          description: "Optional: enters DRIVEN mode. Array of event specs keyed by frame. See description for event type shapes.",
+          items: {
+            type: "object",
+            required: ["frame", "type"],
+            properties: {
+              frame: { type: "integer", description: "0-based frame to fire on." },
+              type: { type: "string", enum: ["action_press", "action_release", "action_tap", "key", "mouse_click", "mouse_motion"] },
+              action: { type: "string" },
+              strength: { type: "number", default: 1.0 },
+              keycode: { description: "For type='key': 'A', 'Space', 'F1', or int keycode." },
+              pressed: { type: "boolean" },
+              button: { type: "integer", description: "Mouse button (1=left, 2=right, 3=middle)." },
+              position: { type: "array", description: "[x, y] viewport coordinates." },
+            },
+          },
+        },
+        screenshot: {
+          type: "string",
+          description: "Shorthand: one PNG saved at the final frame. Equivalent to screenshots:[{frame: quit_frame, path: ...}]. Triggers offscreen-windowed subprocess (brief window flash).",
+        },
+        screenshots: {
+          type: "array",
+          description: "Capture PNGs at multiple specific frames during the run — useful for verifying state transitions (spawn at frame 30, mid-animation at 60, final at 120).",
+          items: {
+            type: "object",
+            required: ["frame", "path"],
+            properties: {
+              frame: { type: "integer" },
+              path: { type: "string" },
+            },
+          },
+        },
+        resolution: {
+          type: "string",
+          default: "320x240",
+          description: "Window resolution 'WxH' when screenshots are captured. Default is tiny to minimize offscreen footprint; bump to 1280x720 or similar for UI verification.",
+        },
+        state_dump: {
+          type: "boolean",
+          default: false,
+          description: "When true, driver writes a JSON snapshot of the final scene tree (name, class, node_path, script, children, plus common props like visible/position/text/value/modulate). Returned as result.final_state. Lets agents verify end state programmatically instead of eyeballing the screenshot.",
+        },
+        seed: {
+          type: "integer",
+          description: "Optional RNG seed. Set before the target scene is instanced so randi/randf are reproducible. Useful for deterministic tests.",
+        },
+      },
+    },
+  },
+  {
+    name: "user_fs_read",
+    method: "user_fs.read",
+    description:
+      "Read a text file from the user:// data directory — where games persist save files, custom-level JSON, settings, etc. Separate from fs_list (which is res://-only) because user:// is runtime-written state.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string", description: "Must begin with 'user://'." },
+      },
+    },
+  },
+  {
+    name: "user_fs_list",
+    method: "user_fs.list",
+    description:
+      "List files and subdirectories under a user:// directory. Optionally recursive.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dir: { type: "string", default: "user://", description: "Must begin with 'user://'." },
+        recursive: { type: "boolean", default: false },
       },
     },
   },

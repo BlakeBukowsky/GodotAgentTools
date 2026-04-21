@@ -1,6 +1,8 @@
 @tool
 extends RefCounted
 
+const Coerce := preload("res://addons/agent_tools/tools/_coerce.gd")
+
 # scene.inspect — read-only. Accepts {"path": "res://..."} or omits path to use the currently-edited scene.
 #   Returns {root: <NodeDict>, path: "<scene_file_path>"} where NodeDict = {name, class, node_path, script, children}.
 static func inspect(params: Dictionary) -> Dictionary:
@@ -91,14 +93,8 @@ static func add_node(params: Dictionary) -> Dictionary:
 
 
 # scene.set_property — operates on the currently-edited scene.
-# Params: {node_path: "Player/Sprite2D", property: "position", value: [10, 20]}
-# Coercion rules for common types:
-#   bool/int/float/string  — JSON primitives
-#   Vector2                — [x, y]
-#   Vector3                — [x, y, z]
-#   Color                  — [r, g, b] or [r, g, b, a] or "#rrggbb"/"#rrggbbaa"
-#   NodePath               — string
-# Other types are passed through as-is (useful for Dictionary/Array props).
+# Params: {node_path, property, value} — value is coerced via Coerce.coerce based on
+# the target property's type. See _coerce.gd for the full supported-type list.
 static func set_property(params: Dictionary) -> Dictionary:
 	var node_path: String = params.get("node_path", "")
 	var property_name: String = params.get("property", "")
@@ -120,18 +116,29 @@ static func set_property(params: Dictionary) -> Dictionary:
 			break
 	if prop_info.is_empty():
 		return _err(-32602, "property not found on %s: %s" % [node.get_class(), property_name])
+	# Reject read-only properties upfront — Godot would silently ignore the set().
+	if int(prop_info.get("usage", 0)) & PROPERTY_USAGE_READ_ONLY:
+		return _err(-32602, "property '%s' on %s is read-only" % [property_name, node.get_class()])
 
-	var coerced = _coerce(params.get("value"), prop_info.type)
+	var coerced = Coerce.coerce(params.get("value"), prop_info.type)
 	if coerced is Dictionary and coerced.has("_error"):
 		return _err(-32602, coerced._error)
 
 	node.set(property_name, coerced)
+	# Safety net: Godot silently drops assignments that don't fit the property type
+	# (e.g. non-Resource assigned to a Resource-typed slot). Detect that instead of
+	# returning a misleading "value": "<Object#null>" echo.
+	var stored = node.get(property_name)
+	if coerced != null and stored == null and prop_info.type == TYPE_OBJECT:
+		return _err(-32001,
+			"property '%s' on %s was not accepted (assignment silently dropped — target expects a %s; passed value type didn't match)" %
+			[property_name, node.get_class(), prop_info.get("hint_string", "Resource")])
 	EditorInterface.mark_scene_as_unsaved()
 
 	return _ok({
 		"node_path": node_path,
 		"property": property_name,
-		"value": node.get(property_name),
+		"value": Coerce.to_json(stored),
 	})
 
 
@@ -199,20 +206,49 @@ static func open_scene(params: Dictionary) -> Dictionary:
 	return _ok({"path": path})
 
 
-# scene.save — save the currently-edited scene. Pass 'path' to save-as (rebinds the scene to that path).
+# scene.save — save the currently-edited scene. Pass 'path' to save-as (rebinds
+# the scene to that path).
+#
+# Fresh scenes (created via `scene.add_node`-only workflows with no backing file,
+# or never-saved manual scenes) have an empty `scene_file_path`. Godot's bare
+# `save_scene()` responds by opening the native Save-As file dialog — blocking
+# the editor and requiring a human click. We detect that case and return an
+# error instead, so the agent can react cleanly by re-calling with `path`.
 static func save_scene(params: Dictionary) -> Dictionary:
 	var root := EditorInterface.get_edited_scene_root()
 	if root == null:
 		return _err(-32001, "no scene open")
 	var path: String = params.get("path", "")
+	var current_path: String = root.scene_file_path
+
+	if path == "" and current_path == "":
+		return _err(-32602,
+			"scene has never been saved and no 'path' was given. " +
+			"Calling bare save would open the Save-As dialog and block the editor. " +
+			"Re-call with 'path' set to a res:// target (e.g. 'res://scenes/foo.tscn').")
+
 	if path == "":
 		var err := EditorInterface.save_scene()
 		if err != OK:
 			return _err(-32001, "save failed: error %d" % err)
 	else:
-		# save_scene_as returns void in Godot 4.x — no error to check.
+		# save_scene_as does NOT auto-create parent directories — it silently
+		# fails if the target dir doesn't exist. Ensure the dir first.
+		var dir_path := path.get_base_dir()
+		if not DirAccess.dir_exists_absolute(dir_path):
+			var derr := DirAccess.make_dir_recursive_absolute(dir_path)
+			if derr != OK:
+				return _err(-32001, "mkdir failed (%d): %s" % [derr, dir_path])
+		# save_scene_as returns void in Godot 4.x — no error to check directly.
 		EditorInterface.save_scene_as(path)
-	return _ok({"path": EditorInterface.get_edited_scene_root().scene_file_path})
+
+	var final_path: String = EditorInterface.get_edited_scene_root().scene_file_path
+	# If we passed a path but the scene still isn't bound, the save didn't land.
+	# Surface that explicitly instead of returning {"path": ""} which looks like success.
+	if path != "" and final_path == "":
+		return _err(-32001,
+			"save_scene_as('%s') did not bind the scene — verify the path is writable and ends in .tscn" % path)
+	return _ok({"path": final_path})
 
 
 # scene.new — create a new .tscn file with a root node of the given type. By default
@@ -339,7 +375,7 @@ static func get_property(params: Dictionary) -> Dictionary:
 	return _ok({
 		"node_path": node_path,
 		"property": property_name,
-		"value": node.get(property_name),
+		"value": Coerce.to_json(node.get(property_name)),
 		"type": type_string(prop_type),
 	})
 
@@ -442,6 +478,174 @@ static func _set_owner_recursive(node: Node, owner: Node) -> void:
 		_set_owner_recursive(child, owner)
 
 
+# scene.build_tree — build a subtree in one call.
+# Spec is recursive: each entry is {type (required), name?, properties?, script?, children?}.
+# Collapses what would otherwise be N scene.add_node + M scene.set_property + K script.attach
+# calls into a single request, which matters for any UI-heavy scene where hand-writing the
+# tree by calling the atomic tools balloons into dozens of round trips.
+# Properties use the same Coerce rules as scene.set_property (Vectors from arrays, Resources
+# auto-loaded from res:// paths, etc.).
+# On any failure, all nodes created during the call are rolled back so the scene doesn't
+# end up partly built.
+# Params: {parent_path?: ".", nodes: [TreeNode, ...]}
+#   TreeNode: {type: "ClassName", name?, properties?: {name: value}, script?: "res://...", children?: [TreeNode, ...]}
+static func build_tree(params: Dictionary) -> Dictionary:
+	var parent_path: String = params.get("parent_path", ".")
+	var nodes: Array = params.get("nodes", [])
+	if nodes.is_empty():
+		return _err(-32602, "missing 'nodes' (array of tree entries)")
+
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return _err(-32001, "no scene open")
+	var parent: Node = root if parent_path == "." or parent_path == "" else root.get_node_or_null(parent_path)
+	if parent == null:
+		return _err(-32001, "parent not found: %s" % parent_path)
+
+	var created_nodes: Array = []
+	var created_paths: Array = []
+	for spec in nodes:
+		var err_msg := _build_subtree(spec, parent, root, created_nodes, created_paths)
+		if err_msg != "":
+			# Rollback: free everything created during this call in reverse order.
+			for i in range(created_nodes.size() - 1, -1, -1):
+				var n: Node = created_nodes[i]
+				if is_instance_valid(n):
+					if n.get_parent():
+						n.get_parent().remove_child(n)
+					n.queue_free()
+			return _err(-32001, err_msg)
+
+	EditorInterface.mark_scene_as_unsaved()
+	return _ok({
+		"parent_path": parent_path,
+		"created": created_paths,
+		"count": created_paths.size(),
+	})
+
+
+# Recursive worker. Appends to the shared created_nodes/created_paths arrays so
+# the caller can roll back on failure. Returns "" on success, or an error message.
+static func _build_subtree(spec, parent: Node, scene_root: Node, created_nodes: Array, created_paths: Array) -> String:
+	if typeof(spec) != TYPE_DICTIONARY:
+		return "tree entry must be an object, got %s" % type_string(typeof(spec))
+
+	var node_type: String = spec.get("type", "")
+	if node_type == "":
+		return "tree entry missing 'type'"
+	if not ClassDB.class_exists(node_type):
+		return "unknown class: %s" % node_type
+	if not ClassDB.is_parent_class(node_type, "Node"):
+		return "type must derive from Node: %s" % node_type
+	if not ClassDB.can_instantiate(node_type):
+		return "class is not instantiable: %s" % node_type
+
+	var inst := ClassDB.instantiate(node_type) as Node
+	if inst == null:
+		return "failed to instantiate %s" % node_type
+
+	var node_name: String = spec.get("name", "")
+	if node_name != "":
+		inst.name = node_name
+
+	parent.add_child(inst)
+	inst.owner = scene_root
+	created_nodes.append(inst)
+	var this_path := String(scene_root.get_path_to(inst))
+	created_paths.append(this_path)
+
+	# Attach a script before applying properties so script-exported properties
+	# become settable in this same call.
+	var script_path: String = spec.get("script", "")
+	if script_path != "":
+		var script := ResourceLoader.load(script_path, "Script") as Script
+		if script == null:
+			return "failed to load script '%s' for '%s'" % [script_path, this_path]
+		inst.set_script(script)
+
+	var properties: Dictionary = spec.get("properties", {})
+	if not properties.is_empty():
+		var by_name: Dictionary = {}
+		for p in inst.get_property_list():
+			by_name[p.name] = p
+		for prop_name in properties:
+			if not by_name.has(prop_name):
+				return "property not found on %s ('%s'): %s" % [node_type, this_path, prop_name]
+			var prop_info: Dictionary = by_name[prop_name]
+			if int(prop_info.get("usage", 0)) & PROPERTY_USAGE_READ_ONLY:
+				return "property '%s' on '%s' is read-only" % [prop_name, this_path]
+			var coerced = Coerce.coerce(properties[prop_name], prop_info.type)
+			if coerced is Dictionary and coerced.has("_error"):
+				return "property '%s' on '%s': %s" % [prop_name, this_path, coerced._error]
+			inst.set(prop_name, coerced)
+			if coerced != null and inst.get(prop_name) == null and prop_info.type == TYPE_OBJECT:
+				return "property '%s' on '%s' was not accepted (assignment silently dropped)" % [prop_name, this_path]
+
+	var children: Array = spec.get("children", [])
+	for child_spec in children:
+		var child_err := _build_subtree(child_spec, inst, scene_root, created_nodes, created_paths)
+		if child_err != "":
+			return child_err
+
+	return ""
+
+
+# scene.call_method — invoke a method on a node in the currently-edited scene.
+# Args are coerced based on the target method's declared parameter types
+# (same rules as scene.set_property — including res:// → Resource auto-load).
+# Return value is serialized via Coerce.to_json so the echo is unambiguous data.
+# Params: {node_path, method, args?: []}
+static func call_method(params: Dictionary) -> Dictionary:
+	var node_path: String = params.get("node_path", "")
+	var method_name: String = params.get("method", "")
+	var args: Array = params.get("args", [])
+	if node_path == "" or method_name == "":
+		return _err(-32602, "missing 'node_path' or 'method'")
+
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return _err(-32001, "no scene open")
+	var node: Node = root if node_path == "." else root.get_node_or_null(node_path)
+	if node == null:
+		return _err(-32001, "node not found: %s" % node_path)
+	if not node.has_method(method_name):
+		return _err(-32602, "method not found: %s.%s" % [node.get_class(), method_name])
+
+	# Not typed as Array — _coerce_args returns a Dictionary on error, and strict
+	# typing would reject the assignment before we can branch on it.
+	var coerced_args = _coerce_args(node, method_name, args)
+	if coerced_args is Dictionary:
+		return coerced_args  # error passthrough
+	var result = node.callv(method_name, coerced_args)
+	EditorInterface.mark_scene_as_unsaved()
+	return _ok({
+		"node_path": node_path,
+		"method": method_name,
+		"return": Coerce.to_json(result),
+	})
+
+
+# Look up the method's parameter types and coerce each arg accordingly.
+# Returns a coerced Array, or a Dictionary with {"error": ...} on failure.
+static func _coerce_args(obj: Object, method_name: String, args: Array):
+	var method_info: Dictionary = {}
+	for m in obj.get_method_list():
+		if m.name == method_name:
+			method_info = m
+			break
+	var arg_types: Array = method_info.get("args", [])
+	var out: Array = []
+	for i in args.size():
+		if i < arg_types.size():
+			var coerced = Coerce.coerce(args[i], arg_types[i].type)
+			if coerced is Dictionary and coerced.has("_error"):
+				return _err(-32602, "arg %d: %s" % [i, coerced._error])
+			out.append(coerced)
+		else:
+			out.append(args[i])
+	return out
+
+
 # scene.current — describe the currently-edited scene, or {open: false} if none.
 static func current(_params: Dictionary) -> Dictionary:
 	var root := EditorInterface.get_edited_scene_root()
@@ -453,41 +657,6 @@ static func current(_params: Dictionary) -> Dictionary:
 		"root_name": String(root.name),
 		"root_class": root.get_class(),
 	})
-
-
-static func _coerce(value, target_type: int):
-	match target_type:
-		TYPE_BOOL:
-			return bool(value)
-		TYPE_INT:
-			return int(value)
-		TYPE_FLOAT:
-			return float(value)
-		TYPE_STRING, TYPE_STRING_NAME:
-			return String(value)
-		TYPE_NODE_PATH:
-			return NodePath(String(value))
-		TYPE_VECTOR2:
-			if value is Array and value.size() == 2:
-				return Vector2(value[0], value[1])
-			return {"_error": "Vector2 expects [x, y]"}
-		TYPE_VECTOR2I:
-			if value is Array and value.size() == 2:
-				return Vector2i(int(value[0]), int(value[1]))
-			return {"_error": "Vector2i expects [x, y]"}
-		TYPE_VECTOR3:
-			if value is Array and value.size() == 3:
-				return Vector3(value[0], value[1], value[2])
-			return {"_error": "Vector3 expects [x, y, z]"}
-		TYPE_COLOR:
-			if value is Array and (value.size() == 3 or value.size() == 4):
-				var a := float(value[3]) if value.size() == 4 else 1.0
-				return Color(value[0], value[1], value[2], a)
-			if value is String:
-				return Color(value)
-			return {"_error": "Color expects [r,g,b(,a)] or '#rrggbb(aa)'"}
-		_:
-			return value
 
 
 static func _ok(data) -> Dictionary:
