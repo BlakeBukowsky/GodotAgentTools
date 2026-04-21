@@ -17,6 +17,10 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="GodotTools Agent Plugin"
 config/features=PackedStringArray("4.6", "GL Compatibility")
 
+[autoload]
+
+_MCPGameBridge="*uid://cds186n8uv4f0"
+
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/agent_tools/plugin.cfg")

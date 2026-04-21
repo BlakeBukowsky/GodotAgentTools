@@ -3,6 +3,40 @@
 All notable changes to this project will be documented here. Versions on the Godot addon
 (`addons/agent_tools/plugin.cfg`) and the MCP shim (`mcp/package.json`) stay in sync.
 
+## [0.3.0] — 2026-04-21
+
+Competitive-parity pass against the broader Godot-AI tool surface, plus MCP Resources.
+
+### Added (third pass)
+
+- **Real multi-editor session routing.** Plugin now scans ports 9920–9929 for a free one and writes a per-PID descriptor to `<home>/.godot-agent-tools/sessions/<pid>.json` containing `{pid, port, project_path, project_name, godot_version, started_at_unix}`. The MCP shim reads this registry on every call to resolve a target, filters dead sessions by PID-alive check, and defaults to the most-recently-started one. New shim-local tools `session.list` and `session.activate` let an agent enumerate running editors and pin subsequent calls to a specific PID. `GODOT_AGENT_PORT` env var still forces a specific target and bypasses discovery.
+- **Three more MCP clients in `client.configure`.** Added `windsurf_user` (`~/.codeium/windsurf/mcp_config.json`), `continue_user` (`~/.continue/config.json`, writes into `experimental.modelContextProtocolServers` array with transport-match dedup), `vscode_project` (`.vscode/mcp.json` with VS Code's `servers` schema). Full list now: `claude_code_project`, `claude_code_user`, `claude_desktop`, `cursor_project`, `cursor_user`, `windsurf_user`, `continue_user`, `vscode_project`. Zed / VS Code user / Cline still need manual setup (JSONC-with-comments + editor-UI-only storage respectively).
+
+### Added (second pass)
+
+- **`test.run` — first-class test framework integration.** Detects GUT (`addons/gut`) or GdUnit4 (`addons/gdUnit4`), invokes the framework's CLI runner via a headless subprocess, and parses the output into `{total, passed, failed, skipped, failures: [{name, file, line}]}`. Higher level than `run.scene_headless` — understands framework concepts instead of making the agent regex stdout.
+- **`client.configure` / `client.list` / `client.remove`.** Manage MCP client config files without hand-editing. Initial client list: `claude_code_project` (writes `.mcp.json` at project root), `claude_code_user` (`~/.claude.json`), `claude_desktop` (OS-specific), `cursor_project` (`.cursor/mcp.json`), `cursor_user` (`~/.cursor/mcp.json`). Idempotent — won't duplicate an existing entry; `overwrite:true` to force-replace.
+- **`physics.autofit_collision_shape_2d`.** Given a Sprite2D or AnimatedSprite2D, sizes a CollisionShape2D (rectangle / circle / capsule) to match the sprite's visual bounds and centers it. Auto-creates the CollisionShape2D if missing (`create:true`). Respects sprite offset, centering, scale, and region_rect.
+- **Theme helpers — `theme.set_color`, `theme.set_constant`, `theme.set_font_size`, `theme.set_stylebox_flat`.** Wrap Theme's awkward `(item_name, type_name, value)` API. `set_stylebox_flat` is a recipe tool — creates a `StyleBoxFlat` with the given properties (via `Coerce`) and assigns it in one call, replacing the usual multi-step setup.
+- **Multi-editor port configuration.** Plugin now reads `agent_tools/port` from `project.godot` (falls back to default 9920). Different Godot projects can bind to different ports; MCP clients target via `GODOT_AGENT_PORT` env var. Simple alternative to full session routing for the common "I have two editors open" case.
+
+### Added (first pass)
+
+- **`editor.game_screenshot` + live-game bridge.** New autoload (`_MCPGameBridge`, auto-registered by the plugin) runs inside the running game and handles capture requests via a file-based IPC channel under `res://.godot/agent_tools/bridge/`. Tool writes a request, polls for the response PNG, returns. Works for scenes that the user has pressed Play on — complements (doesn't replace) `run.scene_headless` which spawns its own subprocess. Falls back with a clear error when no game is running.
+- **`logs.read` / `logs.clear` — live game log capture.** Same autoload attaches a custom `Logger` via `OS.add_logger()`, streaming every `print` / `push_error` / `push_warning` into a ring buffer written to `res://.godot/agent_tools/bridge/logs.json`. Agent reads structured entries (`{level, message, time_ms}`) without shelling out or regex-parsing.
+- **`performance.monitors`.** One tool call for FPS, frame/physics time, memory (static + max), object/node/resource/orphan counts, draw calls, primitives, 2D items, video memory, audio latency, 2D/3D physics active objects. Default returns a common set; pass `monitors: ["fps", "draw_calls", ...]` for targeted reads.
+- **`editor.state`.** Consolidated editor + project status: Godot version, project name, current scene details, open scenes list, play state, playing scene path. Replaces piecewise `scene.current` + `project.get_setting` patterns.
+- **`editor.selection_get` / `editor.selection_set`.** Read or set the editor tree dock's selection — lets agents cooperate with manual editor work (operate on what the user clicked, or point the user at what the agent just built).
+- **`script.patch`.** Incremental `.gd` edits. `replacements: [{old, new}]` requires each `old` to appear exactly once (ambiguous or missing matches error cleanly); alternative `full_source` overwrites. Parse-checks the result via `ResourceLoader.load`; **rolls back to the original source if parsing fails**, so a bad patch can't leave a broken script on disk. Supports `dry_run`.
+- **`fs.read_text` / `fs.write_text`** for `res://`. `write_text` auto-creates parent dirs and triggers a filesystem rescan so new files appear in the FileSystem dock immediately.
+- **`batch.execute`.** Dispatch multiple tool calls in one round trip, returning per-call results. Saves TCP round trips on long known sequences. Optional `stop_on_error`.
+- **MCP Resources (protocol-level addition).** `godot://editor/state`, `godot://scene/current`, `godot://scene/hierarchy`, `godot://selection/current`, `godot://logs/recent`, `godot://performance/monitors`. Agents that support MCP Resources can subscribe to these read-only endpoints instead of polling tools.
+
+### Changed
+
+- **README has an "Agent Tools vs. Godot AI" section.** Honest breakdown of where each plugin is stronger, plus a tool-count-philosophy note (dense/generic vs wide/specific). Users can run both servers simultaneously without conflict.
+- **Plugin auto-registers `_MCPGameBridge` autoload** on enable and removes it on disable. First time you enable the plugin, `project.godot` gets a new `autoload/_MCPGameBridge` entry; disabling cleanly removes it.
+
 ## [0.2.1] — 2026-04-21
 
 ### Added

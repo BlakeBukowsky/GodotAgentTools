@@ -1,8 +1,8 @@
 # Godot Agent Tools
 
-Let coding agents (Claude Code, Cursor, Cline, Windsurf, Claude Desktop, etc.) work inside your Godot project safely — editing scenes, wiring signals, creating resources, validating references, and running headless smoke tests through the editor's real APIs instead of hand-editing `.tscn` / `.tres` / `project.godot` as text.
+Let coding agents (Claude Code, Cursor, Cline, Windsurf, Claude Desktop, etc.) work inside your Godot project safely — editing scenes, wiring signals, creating resources, and more through the editor's real APIs instead of hand-editing `.tscn` / `.tres` / `project.godot` as text.
 
-**48 tools** across 13 namespaces. Works with any MCP-capable agent. Godot 4.3+.
+**70 tools + 6 MCP Resources** across 21 namespaces. Works with any MCP-capable agent. Godot 4.3+.
 
 ---
 
@@ -65,6 +65,10 @@ Pick your agent below. Every snippet is the same two lines (`"command": "npx"` +
 Two scopes to choose from:
 - **Project-scoped**: config lives in your Godot project; only that project sees the tools.
 - **User-scoped**: config lives in your home directory; every project on the machine sees the tools.
+
+### Auto-configure from inside the agent
+
+Once the addon is running, you can call `client.configure` from an already-working agent to write the config entry for *other* clients — e.g. "set me up in Cursor too." Supported ids: `claude_code_project`, `claude_code_user`, `claude_desktop`, `cursor_project`, `cursor_user`. Use `client.list` to see which clients currently have the entry.
 
 
 <details>
@@ -265,13 +269,13 @@ run_scene_headless  path=res://Main.tscn quit_after_seconds=1
 
 ## Tool catalog
 
-**48 tools** across 13 namespaces:
+**70 tools + 6 MCP Resources** across 21 namespaces:
 
 | Namespace | Tools |
 |---|---|
 | `scene` | `new`, `open`, `current`, `save`, `inspect`, `add_node`, `build_tree`, `remove_node`, `reparent`, `duplicate_node`, `set_property`, `get_property`, `call_method`, `instance_packed`, `capture_screenshot` |
 | `signal` | `connect`, `disconnect`, `list` |
-| `script` | `create`, `attach` |
+| `script` | `create`, `attach`, `patch` |
 | `resource` | `create`, `set_property`, `call_method` |
 | `refs` | `validate_project`, `find_usages`, `rename`, `rename_class` |
 | `project` | `get_setting`, `set_setting` |
@@ -279,10 +283,22 @@ run_scene_headless  path=res://Main.tscn quit_after_seconds=1
 | `input_map` | `add_action`, `add_event`, `list`, `remove_action`, `remove_event` |
 | `animation` | `list`, `add_animation`, `remove_animation`, `add_value_track` |
 | `docs` | `class_ref` |
-| `fs` | `list` |
+| `fs` | `list`, `read_text`, `write_text` |
 | `user_fs` | `read`, `list` |
-| `run` | `scene_headless` (supports scripted input + screenshot capture) |
-| `editor` | `reload_filesystem`, `save_all_scenes` |
+| `run` | `scene_headless` (scripted input + multi-frame screenshots + state dump + seed + structured errors) |
+| `editor` | `reload_filesystem`, `save_all_scenes`, `state`, `selection_get`, `selection_set`, `game_screenshot` |
+| `logs` | `read`, `clear` (live game output via `_MCPGameBridge` autoload) |
+| `performance` | `monitors` (FPS, memory, draw calls, node counts, etc.) |
+| `test` | `run` (auto-detects GUT / GdUnit4, returns structured pass/fail) |
+| `physics` | `autofit_collision_shape_2d` |
+| `theme` | `set_color`, `set_constant`, `set_font_size`, `set_stylebox_flat` |
+| `client` | `list`, `configure`, `remove` (manage MCP client config files) |
+| `batch` | `execute` (dispatch multiple calls in one round trip) |
+| `session` | `list`, `activate` (multi-editor routing — handled by the MCP shim) |
+
+Plus **6 MCP Resources** for agents that support the Resources protocol:
+`godot://editor/state`, `godot://scene/current`, `godot://scene/hierarchy`,
+`godot://selection/current`, `godot://logs/recent`, `godot://performance/monitors`.
 
 Full JSON schemas live in [`mcp/server.mjs`](mcp/server.mjs).
 
@@ -298,6 +314,10 @@ Full JSON schemas live in [`mcp/server.mjs`](mcp/server.mjs).
 - **`animation.*`** manipulates `AnimationPlayer` resources — animations in `.tscn` text form are one of the least agent-friendly surfaces in Godot.
 - **`scene.build_tree`** collapses "build a 30-node UI" from dozens of `add_node` + `set_property` round trips into a single recursive spec. Atomic: full rollback on any failure.
 - **`scene.call_method` / `resource.call_method`** invoke any method with argument coercion — so helpers like `StyleBoxFlat.set_border_width_all(4)` don't force agents to write a `.gd` script just to call them.
+- **`test.run`** detects GUT or GdUnit4 in the project and runs the test suite, returning structured `{total, passed, failed, skipped, failures: [{name, file, line, message}]}`. No stdout regex-parsing required.
+- **`script.patch`** applies targeted replacements or full-source edits with parse-check + auto-rollback if the patched file fails to parse. Safer than Write-then-hope.
+- **`editor.game_screenshot` + `logs.read`** observe a user-initiated run (after pressing F5). Complementary to `run.scene_headless` which is agent-initiated.
+- **`physics.autofit_collision_shape_2d`** sizes a CollisionShape2D to a sibling Sprite2D's visual bounds. Rectangle / circle / capsule. Honors offset, scale, centering, region_rect.
 
 ---
 
@@ -349,10 +369,15 @@ npm install
 To smoke-test the plugin end-to-end (needs the editor running with plugin enabled):
 
 ```bash
-node tests/smoke.mjs
+node tests/smoke.mjs                # 37 tests — baseline v0.1/v0.2 surface
+node tests/run_enhancements.mjs     # 6 tests — run.scene_headless driven mode
+node tests/v030_tools.mjs           # 19 tests — v0.3 tool additions
+# live-game bridge tests require a running game:
+node tests/live_bridge.mjs          # requires F5 on a scene; screenshot + logs.read
+node tests/test_gut.mjs             # requires addons/gut installed
 ```
 
-Exercises ~25 tool calls covering create/read/update/delete flows, cleans up `res://__smoketest/` after itself, exits non-zero on the first failure.
+Each cleans up its test artifacts and exits non-zero on first failure.
 
 ---
 
@@ -368,6 +393,18 @@ Exercises ~25 tool calls covering create/read/update/delete flows, cleans up `re
 | Port `9920` already in use | Another process has it. Edit `plugin.gd`'s `DEFAULT_PORT` constant and set `GODOT_AGENT_PORT` in your agent's MCP env. |
 
 ---
+
+## Agent Tools vs. Godot AI
+
+[Godot AI](https://github.com/Godot-AI/godot-ai) is the most established plugin in the same space (120+ tools). Both cover the core ground — scene/node edits, scripts, signals, themes, animation, input map, autoloads, test integration, live-game bridge, performance monitors, batch execution, MCP Resources, multi-editor session routing, and client auto-config.
+
+**Godot AI goes wider.** It ships dedicated tools for camera/material/theme/audio/particle/animation presets, `project_run`, `node_find`, `script_find_symbols`, `test_results_get`, and more granular resource lifecycle ops. If your agent benefits from explicitly named tools it can discover without knowing Godot's class API — or you want broad editor-setup coverage — that's the fit.
+
+**Agent Tools goes denser and covers a few things Godot AI's tool list doesn't include.** `run.scene_headless` injects per-frame input events and captures state dumps / multi-frame screenshots for deterministic gameplay verification. A `refs.*` suite handles project-wide validation, UID-aware usage search, and reference-preserving renames. `docs.class_ref` exposes ClassDB introspection. `user_fs.*` reads the `user://` data directory (save files, custom levels). Coercion accepts `Transform2D/3D`, `Basis`, `AABB`, `Plane`, and all `Packed*Array` variants; Resource-typed properties auto-load from `res://` / `uid://` path strings.
+
+**Why dense/generic can win.** Every MCP tool's schema gets loaded into the agent's context at tool-list time. 120 tools is roughly 1.7× our schema footprint — a real but modest cost on long sessions and smaller context windows. Dense/generic also pushes the agent toward reflection (`docs.class_ref`) instead of guessing tool names, which helps when the agent already knows Godot's class API (current Claude models do). Agents that are weaker or less Godot-aware benefit more from wide/specific's explicit tool names.
+
+Both speak MCP. Configure both simultaneously under different names — no conflict.
 
 ## License
 

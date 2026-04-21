@@ -16,14 +16,14 @@ func _init(registry) -> void:
 	_registry = registry
 
 
-func start(port: int) -> void:
+func start(port: int) -> bool:
 	_tcp = TCPServer.new()
 	var err := _tcp.listen(port, "127.0.0.1")
 	if err != OK:
-		push_error("[agent_tools] listen(%d) failed: %s" % [port, err])
 		_tcp = null
-		return
+		return false
 	set_process(true)
+	return true
 
 
 func stop() -> void:

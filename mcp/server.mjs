@@ -7,12 +7,66 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import net from "node:net";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 const HOST = process.env.GODOT_AGENT_HOST || "127.0.0.1";
-const PORT = parseInt(process.env.GODOT_AGENT_PORT || "9920", 10);
+// GODOT_AGENT_PORT env var forces a specific target, bypassing session discovery.
+// Leave unset to use the multi-session registry.
+const FORCED_PORT = process.env.GODOT_AGENT_PORT ? parseInt(process.env.GODOT_AGENT_PORT, 10) : null;
 const TIMEOUT_MS = parseInt(process.env.GODOT_AGENT_TIMEOUT_MS || "15000", 10);
+
+// Multi-editor session registry — matches the plugin-side writer at
+// <home>/.godot-agent-tools/sessions/<pid>.json. Each file describes one
+// running Godot editor with the plugin enabled.
+const SESSION_DIR = path.join(os.homedir(), ".godot-agent-tools", "sessions");
+
+function isProcessAlive(pid) {
+  try {
+    // signal 0 doesn't send anything — just tests whether we can signal the pid.
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM means the process exists but we can't signal it (still "alive" for us).
+    return e.code === "EPERM";
+  }
+}
+
+function listSessions() {
+  if (!fs.existsSync(SESSION_DIR)) return [];
+  let entries;
+  try { entries = fs.readdirSync(SESSION_DIR); }
+  catch { return []; }
+  const out = [];
+  for (const name of entries) {
+    if (!name.endsWith(".json")) continue;
+    const full = path.join(SESSION_DIR, name);
+    let parsed;
+    try { parsed = JSON.parse(fs.readFileSync(full, "utf8")); }
+    catch { continue; }
+    if (!parsed.pid || !parsed.port) continue;
+    const alive = isProcessAlive(parsed.pid);
+    if (!alive) {
+      // Clean up a stale entry opportunistically — plugin _exit_tree didn't fire
+      // (probably editor crashed or was killed).
+      try { fs.unlinkSync(full); } catch {}
+      continue;
+    }
+    out.push(parsed);
+  }
+  // Most recently started first.
+  out.sort((a, b) => (b.started_at_unix || 0) - (a.started_at_unix || 0));
+  return out;
+}
+
+// Tracks which session the shim is currently forwarding tool calls to. Starts
+// unset; first call resolves via listSessions() or FORCED_PORT.
+let activeSessionPid = null;
 
 const TOOLS = [
   {
@@ -303,6 +357,32 @@ const TOOLS = [
     },
   },
   {
+    name: "script_patch",
+    method: "script.patch",
+    description:
+      "Apply targeted edits to an existing .gd file. Two modes: 'replacements' is an array of {old, new} where each 'old' must match exactly once in the file (ambiguous or missing matches return a clean error instead of silently mangling); 'full_source' overwrites the whole file. After writing, the tool parse-checks the result via ResourceLoader.load; if parsing fails the original is restored and an error is returned. Supports dry_run.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string", description: "Target .gd file." },
+        replacements: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["old", "new"],
+            properties: {
+              old: { type: "string" },
+              new: { type: "string" },
+            },
+          },
+        },
+        full_source: { type: "string", description: "Alternative to replacements: overwrite with this full source." },
+        dry_run: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
     name: "script_create",
     method: "script.create",
     description:
@@ -490,6 +570,247 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "editor_state",
+    method: "editor.state",
+    description:
+      "Consolidated editor + project status in one call: Godot version, project name, current scene (path/class/root_name/open), list of open scenes, is-playing flag, playing scene path.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "editor_selection_get",
+    method: "editor.selection_get",
+    description: "Return the currently-selected nodes in the editor tree dock — for 'operate on what I clicked' workflows.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "editor_selection_set",
+    method: "editor.selection_set",
+    description: "Select specific nodes in the editor tree dock. Useful after an agent operation to point the user's attention at the result.",
+    inputSchema: {
+      type: "object",
+      required: ["node_paths"],
+      properties: {
+        node_paths: { type: "array", items: { type: "string" }, description: "NodePaths relative to the scene root. '.' = root." },
+      },
+    },
+  },
+  {
+    name: "editor_game_screenshot",
+    method: "editor.game_screenshot",
+    description:
+      "Capture the viewport of the CURRENTLY RUNNING game (after user pressed F5 etc.). Works via the _MCPGameBridge autoload registered by this plugin. If no game is running, returns an error pointing the user to run.scene_headless as the subprocess-based alternative.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        output: { type: "string", default: "res://.godot/agent_tools/game_screenshot.png" },
+        timeout_ms: { type: "integer", default: 5000 },
+      },
+    },
+  },
+  {
+    name: "logs_read",
+    method: "logs.read",
+    description:
+      "Read print / push_error / push_warning output from the currently running game (captured by the _MCPGameBridge autoload). Entries include level, message, and timestamp. Returns an empty buffer with a helpful note if the game isn't running.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        clear: { type: "boolean", default: false, description: "Clear the buffer after reading." },
+        max_lines: { type: "integer", default: 200, description: "Cap on entries returned; older entries are omitted first." },
+      },
+    },
+  },
+  {
+    name: "logs_clear",
+    method: "logs.clear",
+    description: "Drop the game log buffer. Safe to call whether the game is running or not.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "performance_monitors",
+    method: "performance.monitors",
+    description:
+      "Read Godot's Performance monitors (FPS, frame time, memory, object/node counts, draw calls, etc.). Default returns a common set; pass 'monitors' with specific names (fps, frame_time, mem_static, draw_calls, orphan_nodes, ...) for targeted reads.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        monitors: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional subset of monitor names. Full list: fps, frame_time, physics_time, mem_static, mem_static_max, objects, resources, nodes, orphan_nodes, draw_calls, primitives, 2d_items, 2d_draw_calls, video_mem, audio_latency, physics_2d_active_objects, physics_3d_active_objects.",
+        },
+      },
+    },
+  },
+  {
+    name: "test_run",
+    method: "test.run",
+    description:
+      "Detect and run a GDScript test framework (GUT or GdUnit4), return structured results. Auto-detects the installed framework (via addons/gut or addons/gdUnit4), can be forced via 'framework'. Returns {total, passed, failed, skipped, failures: [{name, file, line, message}], raw_output}. Higher level than run.scene_headless — understands the framework's test concepts and summary format instead of asking you to parse stdout.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        framework: { type: "string", enum: ["auto", "gut", "gdunit4"], default: "auto" },
+        directory: { type: "string", description: "Test directory (defaults to 'res://test')." },
+        pattern: { type: "string", description: "Filename pattern (framework-specific default)." },
+        timeout_seconds: { type: "integer", default: 60 },
+      },
+    },
+  },
+  {
+    name: "client_list",
+    method: "client.list",
+    description: "List supported MCP clients and whether each has the godot-agent-tools server configured. Shows the config file path for every client so users know where to look.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "client_configure",
+    method: "client.configure",
+    description:
+      "Write the godot-agent-tools MCP server entry into the specified client's config file. Idempotent (won't duplicate); pass overwrite:true to force-replace an existing entry. Supported clients: claude_code_project, claude_code_user, claude_desktop, cursor_project, cursor_user.",
+    inputSchema: {
+      type: "object",
+      required: ["client"],
+      properties: {
+        client: { type: "string", enum: ["claude_code_project", "claude_code_user", "claude_desktop", "cursor_project", "cursor_user"] },
+        overwrite: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "client_remove",
+    method: "client.remove",
+    description: "Remove the godot-agent-tools entry from the specified client's config.",
+    inputSchema: {
+      type: "object",
+      required: ["client"],
+      properties: {
+        client: { type: "string", enum: ["claude_code_project", "claude_code_user", "claude_desktop", "cursor_project", "cursor_user"] },
+      },
+    },
+  },
+  {
+    name: "physics_autofit_collision_shape_2d",
+    method: "physics.autofit_collision_shape_2d",
+    description:
+      "Compute a CollisionShape2D sized to a sibling Sprite2D/AnimatedSprite2D's visual bounds. Can auto-create the CollisionShape2D if it doesn't exist yet (pass create:true). Shape type: 'rectangle' (default), 'circle', or 'capsule'. Optional margin shrinks the shape.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path"],
+      properties: {
+        node_path: { type: "string", description: "CollisionShape2D to fit. Created if missing + create:true." },
+        source: { type: "string", description: "NodePath to a Sprite2D/AnimatedSprite2D. Auto-detected among siblings if omitted." },
+        shape: { type: "string", enum: ["rectangle", "circle", "capsule"], default: "rectangle" },
+        margin: { type: "number", default: 0 },
+        create: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "theme_set_color",
+    method: "theme.set_color",
+    description: "Set a color entry in a Theme resource. Wraps Theme.set_color(item, type, color) — e.g. item='font_color', type='Label'.",
+    inputSchema: {
+      type: "object",
+      required: ["path", "item", "type", "color"],
+      properties: {
+        path: { type: "string", description: "Path to .tres Theme resource." },
+        item: { type: "string", description: "Theme item name (e.g. 'font_color', 'bg_color')." },
+        type: { type: "string", description: "Control class name (e.g. 'Button', 'Label')." },
+        color: { description: "[r,g,b(,a)] or '#hex'." },
+      },
+    },
+  },
+  {
+    name: "theme_set_constant",
+    method: "theme.set_constant",
+    description: "Set an int constant in a Theme resource. E.g. item='h_separation', type='HBoxContainer'.",
+    inputSchema: {
+      type: "object",
+      required: ["path", "item", "type", "value"],
+      properties: {
+        path: { type: "string" },
+        item: { type: "string" },
+        type: { type: "string" },
+        value: { type: "integer" },
+      },
+    },
+  },
+  {
+    name: "theme_set_font_size",
+    method: "theme.set_font_size",
+    description: "Set a font-size entry in a Theme resource. E.g. item='font_size', type='Label'.",
+    inputSchema: {
+      type: "object",
+      required: ["path", "item", "type", "value"],
+      properties: {
+        path: { type: "string" },
+        item: { type: "string" },
+        type: { type: "string" },
+        value: { type: "integer" },
+      },
+    },
+  },
+  {
+    name: "theme_set_stylebox_flat",
+    method: "theme.set_stylebox_flat",
+    description:
+      "Create (or replace) a StyleBoxFlat on a Theme with the given properties and assign it to theme.<item>.<type>. Saves the usual multi-step StyleBoxFlat setup — e.g. {item: 'normal', type: 'Button', properties: {bg_color: [0.1,0.1,0.12,1], corner_radius_top_left: 8, ...}}.",
+    inputSchema: {
+      type: "object",
+      required: ["path", "item", "type"],
+      properties: {
+        path: { type: "string" },
+        item: { type: "string" },
+        type: { type: "string" },
+        properties: { type: "object", additionalProperties: true },
+      },
+    },
+  },
+  {
+    name: "session_list",
+    method: "__local__.session_list",
+    description:
+      "List every running Godot editor with the Agent Tools plugin enabled (each becomes a separate 'session' the shim can target). Each entry: {pid, port, project_path, project_name, godot_version, started_at_unix, active}. The shim's default target is the most-recently-started session; use session_activate to pin a specific one.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "session_activate",
+    method: "__local__.session_activate",
+    description:
+      "Pin subsequent tool calls to a specific Godot editor session (by pid from session_list). Pass pid:null to clear the pin and fall back to 'most-recently-started'. Changing the active session tears down the existing TCP connection; the next call reconnects to the new target.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pid: { type: ["integer", "null"], description: "PID of the session to target; null to clear." },
+      },
+    },
+  },
+  {
+    name: "batch_execute",
+    method: "batch.execute",
+    description:
+      "Run multiple tool calls in one round trip. Each call is dispatched server-side and results are returned in order. Useful when you know the exact sequence you want — saves TCP round trips vs. parallel MCP calls.",
+    inputSchema: {
+      type: "object",
+      required: ["calls"],
+      properties: {
+        calls: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["method"],
+            properties: {
+              method: { type: "string", description: "Dotted method name (e.g. 'scene.add_node')." },
+              params: { type: "object" },
+            },
+          },
+        },
+        stop_on_error: { type: "boolean", default: false, description: "Halt the batch on the first failure. Default keeps going." },
+      },
+    },
+  },
+  {
     name: "editor_reload_filesystem",
     method: "editor.reload_filesystem",
     description:
@@ -675,6 +996,31 @@ const TOOLS = [
     },
   },
   {
+    name: "fs_read_text",
+    method: "fs.read_text",
+    description: "Read a text file under res://. Complement to user_fs_read (which targets user:// for runtime-written state).",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: { path: { type: "string", description: "Must begin with 'res://'." } },
+    },
+  },
+  {
+    name: "fs_write_text",
+    method: "fs.write_text",
+    description:
+      "Write a text file under res://. Creates parent directories if needed; triggers the editor's filesystem rescan so the new file shows up in the FileSystem dock immediately. For .gd scripts prefer script_create / script_patch — those run a parse check.",
+    inputSchema: {
+      type: "object",
+      required: ["path", "content"],
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+        overwrite: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
     name: "user_fs_read",
     method: "user_fs.read",
     description:
@@ -791,10 +1137,12 @@ const BY_NAME = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
 
 // Persistent Godot TCP client. One socket reused across tool calls; outstanding
 // requests are tracked by id so multiple in-flight calls don't interleave data.
+// Target port is resolved lazily per call so session.activate / session death
+// switch over without proactive teardown.
 class GodotClient {
-  constructor(host, port) {
+  constructor(host) {
     this.host = host;
-    this.port = port;
+    this.port = null;
     this.socket = null;
     this.buffer = "";
     this.pending = new Map(); // id -> { resolve, reject, timer }
@@ -802,9 +1150,46 @@ class GodotClient {
     this.connecting = null;
   }
 
+  // Priority: GODOT_AGENT_PORT env > pinned active session > most recent session.
+  _resolvePort() {
+    if (FORCED_PORT != null) return FORCED_PORT;
+    const sessions = listSessions();
+    if (sessions.length === 0) return null;
+    if (activeSessionPid != null) {
+      const pinned = sessions.find((s) => s.pid === activeSessionPid);
+      if (pinned) return pinned.port;
+      activeSessionPid = null; // pinned session died — fall back
+    }
+    return sessions[0].port;
+  }
+
+  // If the active session changed, drop the old socket so the next call
+  // reconnects to the new target.
+  _maybeResetForPortChange() {
+    const target = this._resolvePort();
+    if (target !== this.port && this.socket) {
+      try { this.socket.destroy(); } catch {}
+      this.socket = null;
+      this.buffer = "";
+      for (const { reject, timer } of this.pending.values()) {
+        clearTimeout(timer);
+        reject(new Error("session target changed mid-flight"));
+      }
+      this.pending.clear();
+    }
+    this.port = target;
+  }
+
   async _ensureConnected() {
+    this._maybeResetForPortChange();
     if (this.socket && !this.socket.destroyed) return;
     if (this.connecting) return this.connecting;
+    if (this.port == null) {
+      throw new Error(
+        "No Godot editor session found. Open a project with the 'Agent Tools' plugin enabled, " +
+        "or set the GODOT_AGENT_PORT env var to target a specific port."
+      );
+    }
 
     this.connecting = new Promise((resolve, reject) => {
       const s = new net.Socket();
@@ -921,12 +1306,61 @@ class GodotClient {
   }
 }
 
-const client = new GodotClient(HOST, PORT);
+const client = new GodotClient(HOST);
 
 const server = new Server(
-  { name: "godot-agent-tools", version: "0.2.0" },
-  { capabilities: { tools: {} } }
+  { name: "godot-agent-tools", version: "0.3.0" },
+  { capabilities: { tools: {}, resources: {} } }
 );
+
+// MCP Resources — subscribable read-only endpoints. Agents that support
+// resources can 'watch' these without repeatedly calling tools.
+const RESOURCES = [
+  {
+    uri: "godot://editor/state",
+    name: "Editor state",
+    description: "Current editor state: Godot version, project name, current scene, playing status.",
+    mimeType: "application/json",
+    method: "editor.state",
+  },
+  {
+    uri: "godot://scene/current",
+    name: "Current scene",
+    description: "Currently-edited scene (path, root name, root class, open?).",
+    mimeType: "application/json",
+    method: "scene.current",
+  },
+  {
+    uri: "godot://scene/hierarchy",
+    name: "Current scene hierarchy",
+    description: "Full tree of the currently-edited scene.",
+    mimeType: "application/json",
+    method: "scene.inspect",
+  },
+  {
+    uri: "godot://selection/current",
+    name: "Editor selection",
+    description: "Nodes currently selected in the editor tree dock.",
+    mimeType: "application/json",
+    method: "editor.selection_get",
+  },
+  {
+    uri: "godot://logs/recent",
+    name: "Recent game logs",
+    description: "Recent print / push_error / push_warning output from the running game.",
+    mimeType: "application/json",
+    method: "logs.read",
+  },
+  {
+    uri: "godot://performance/monitors",
+    name: "Performance monitors",
+    description: "FPS, frame time, memory, draw calls, object counts.",
+    mimeType: "application/json",
+    method: "performance.monitors",
+  },
+];
+
+const RESOURCE_BY_URI = Object.fromEntries(RESOURCES.map((r) => [r.uri, r]));
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS.map(({ name, description, inputSchema }) => ({
@@ -944,6 +1378,37 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }],
     };
   }
+
+  // session_list / session_activate are shim-local — they manage the MCP shim's
+  // own routing state and don't forward to any Godot process.
+  if (tool.method === "__local__.session_list") {
+    const sessions = listSessions().map((s) => ({
+      ...s,
+      active: activeSessionPid != null ? s.pid === activeSessionPid : s === listSessions()[0],
+    }));
+    return {
+      content: [{ type: "text", text: JSON.stringify({ sessions, count: sessions.length, active_pid: activeSessionPid }, null, 2) }],
+    };
+  }
+  if (tool.method === "__local__.session_activate") {
+    const pid = req.params.arguments?.pid ?? null;
+    if (pid === null) {
+      activeSessionPid = null;
+    } else {
+      const sessions = listSessions();
+      if (!sessions.some((s) => s.pid === pid)) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `No active session with pid=${pid}. Call session_list to see candidates.` }],
+        };
+      }
+      activeSessionPid = pid;
+    }
+    return {
+      content: [{ type: "text", text: JSON.stringify({ active_pid: activeSessionPid }, null, 2) }],
+    };
+  }
+
   try {
     const result = await client.call(tool.method, req.params.arguments || {});
     return {
@@ -953,6 +1418,44 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     return {
       isError: true,
       content: [{ type: "text", text: e.message }],
+    };
+  }
+});
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  resources: RESOURCES.map(({ uri, name, description, mimeType }) => ({
+    uri,
+    name,
+    description,
+    mimeType,
+  })),
+}));
+
+server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+  const resource = RESOURCE_BY_URI[req.params.uri];
+  if (!resource) {
+    throw new Error(`Unknown resource URI: ${req.params.uri}`);
+  }
+  try {
+    const result = await client.call(resource.method, {});
+    return {
+      contents: [
+        {
+          uri: resource.uri,
+          mimeType: resource.mimeType,
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  } catch (e) {
+    return {
+      contents: [
+        {
+          uri: resource.uri,
+          mimeType: resource.mimeType,
+          text: JSON.stringify({ error: e.message }, null, 2),
+        },
+      ],
     };
   }
 });

@@ -51,6 +51,53 @@ static func list(params: Dictionary) -> Dictionary:
 	})
 
 
+# fs.read_text — read a text file under res://. Complement to user_fs.read.
+# Params: {path}
+static func read_text(params: Dictionary) -> Dictionary:
+	var path: String = params.get("path", "")
+	if path == "":
+		return _err(-32602, "missing 'path'")
+	if not path.begins_with("res://"):
+		return _err(-32602, "path must begin with 'res://' (use user_fs.read for user:// files)")
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return _err(-32001, "failed to open %s (error %d)" % [path, FileAccess.get_open_error()])
+	var size_bytes := f.get_length()
+	var content := f.get_as_text()
+	f.close()
+	return _ok({"path": path, "content": content, "size_bytes": size_bytes})
+
+
+# fs.write_text — write a text file under res://. Creates parent directories
+# if needed. Triggers the editor's filesystem rescan so the new file shows up
+# in the FileSystem dock.
+# Params: {path, content, overwrite?: false}
+static func write_text(params: Dictionary) -> Dictionary:
+	var path: String = params.get("path", "")
+	var content: String = str(params.get("content", ""))
+	var overwrite: bool = params.get("overwrite", false)
+	if path == "":
+		return _err(-32602, "missing 'path'")
+	if not path.begins_with("res://"):
+		return _err(-32602, "path must begin with 'res://'")
+	if FileAccess.file_exists(path) and not overwrite:
+		return _err(-32602, "file exists (pass overwrite:true to replace): %s" % path)
+
+	var dir_path := path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(dir_path):
+		var derr := DirAccess.make_dir_recursive_absolute(dir_path)
+		if derr != OK:
+			return _err(-32001, "mkdir failed (%d): %s" % [derr, dir_path])
+
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return _err(-32001, "could not open for write: %s" % path)
+	f.store_string(content)
+	f.close()
+	EditorInterface.get_resource_filesystem().update_file(path)
+	return _ok({"path": path, "bytes_written": content.length()})
+
+
 static func _walk(dir_path: String, exts: Array, out: Array, include_addons: bool) -> void:
 	var d := DirAccess.open(dir_path)
 	if d == null:

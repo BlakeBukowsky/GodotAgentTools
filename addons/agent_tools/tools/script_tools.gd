@@ -57,6 +57,97 @@ static func attach(params: Dictionary) -> Dictionary:
 	return _attach_script_to_node(node_path, script_path)
 
 
+# script.patch — targeted edits to an existing .gd file. Two modes:
+#   replacements: [{old, new}] — each 'old' must appear exactly once in the file;
+#                                 fails atomically if any replacement is ambiguous
+#                                 or missing. Useful for surgical edits.
+#   full_source:  string       — overwrite the whole file (same as script.create
+#                                 overwrite, kept here for symmetry).
+# After writing, the tool parse-checks the result via ResourceLoader.load(); if
+# that fails, the original file is restored and an error is returned.
+# Params: {path, replacements?: [{old, new}], full_source?: string, dry_run?: false}
+static func patch(params: Dictionary) -> Dictionary:
+	var path: String = params.get("path", "")
+	var replacements: Array = params.get("replacements", [])
+	var full_source: String = params.get("full_source", "")
+	var dry_run: bool = params.get("dry_run", false)
+
+	if path == "" or not path.ends_with(".gd"):
+		return _err(-32602, "'path' must be a .gd file")
+	if not FileAccess.file_exists(path):
+		return _err(-32001, "file not found: %s" % path)
+	if replacements.is_empty() and full_source == "":
+		return _err(-32602, "provide either 'replacements' or 'full_source'")
+
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return _err(-32001, "could not read %s" % path)
+	var original := f.get_as_text()
+	f.close()
+
+	var patched: String = original
+	var applied: Array = []
+	if full_source != "":
+		patched = full_source
+		applied.append("full_source")
+	else:
+		for entry in replacements:
+			if typeof(entry) != TYPE_DICTIONARY or not entry.has("old") or not entry.has("new"):
+				return _err(-32602, "each replacement needs {old, new}")
+			var needle: String = str(entry.old)
+			var replacement: String = str(entry.new)
+			var count := patched.count(needle)
+			if count == 0:
+				return _err(-32602, "'old' string not found (would leave file unchanged): %s" % needle.substr(0, 60))
+			if count > 1:
+				return _err(-32602, "'old' string appears %d times — ambiguous. Include more context to make it unique: %s" % [count, needle.substr(0, 60)])
+			patched = patched.replace(needle, replacement)
+			applied.append("replaced %d chars" % needle.length())
+
+	if patched == original:
+		return _ok({"path": path, "changed": false, "note": "patched content identical to original"})
+
+	if dry_run:
+		return _ok({
+			"path": path,
+			"changed": true,
+			"applied": applied,
+			"new_length": patched.length(),
+			"original_length": original.length(),
+		})
+
+	# Write, then parse-check. If parse fails, restore.
+	var wf := FileAccess.open(path, FileAccess.WRITE)
+	if wf == null:
+		return _err(-32001, "could not write %s" % path)
+	wf.store_string(patched)
+	wf.close()
+
+	EditorInterface.get_resource_filesystem().update_file(path)
+	# Force a fresh parse — ResourceLoader.load returns a cached/placeholder
+	# Script for malformed sources, so we can't just null-check. Call reload()
+	# which actually re-parses and returns an Error.
+	var check := ResourceLoader.load(path, "Script", ResourceLoader.CACHE_MODE_REPLACE)
+	var parse_ok := false
+	if check != null and check is GDScript:
+		parse_ok = (check.reload(true) == OK)
+	if not parse_ok:
+		# Restore original to keep the file loadable.
+		var rf := FileAccess.open(path, FileAccess.WRITE)
+		if rf:
+			rf.store_string(original)
+			rf.close()
+			EditorInterface.get_resource_filesystem().update_file(path)
+		return _err(-32001, "patched script failed to parse — changes rolled back. Check Godot's Output panel for the exact error.")
+
+	return _ok({
+		"path": path,
+		"changed": true,
+		"applied": applied,
+		"new_length": patched.length(),
+	})
+
+
 static func _attach_script_to_node(node_path: String, script_path: String) -> Dictionary:
 	var root := EditorInterface.get_edited_scene_root()
 	if root == null:
