@@ -261,7 +261,14 @@ static func new_scene(params: Dictionary) -> Dictionary:
 
 	EditorInterface.get_resource_filesystem().update_file(path)
 	if open_after:
-		EditorInterface.open_scene_from_path(path)
+		# If the target path is already the currently-edited scene, open_scene_from_path
+		# will just switch to the existing (stale) in-memory tab. Force a reload so the
+		# freshly-written file is what the editor shows.
+		var current_root := EditorInterface.get_edited_scene_root()
+		if current_root != null and current_root.scene_file_path == path:
+			EditorInterface.reload_scene_from_path(path)
+		else:
+			EditorInterface.open_scene_from_path(path)
 	return _ok({"path": path, "root_type": root_type, "root_name": final_name})
 
 
@@ -302,6 +309,137 @@ static func instance_packed(params: Dictionary) -> Dictionary:
 		"scene_path": scene_path,
 		"name": String(inst.name),
 	})
+
+
+# scene.get_property — read a property from a node. Mirror of set_property.
+# Params: {node_path, property}
+static func get_property(params: Dictionary) -> Dictionary:
+	var node_path: String = params.get("node_path", "")
+	var property_name: String = params.get("property", "")
+	if node_path == "" or property_name == "":
+		return _err(-32602, "missing 'node_path' or 'property'")
+
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return _err(-32001, "no scene open")
+	var node: Node = root if node_path == "." else root.get_node_or_null(node_path)
+	if node == null:
+		return _err(-32001, "node not found: %s" % node_path)
+
+	var prop_type: int = TYPE_NIL
+	var found := false
+	for p in node.get_property_list():
+		if p.name == property_name:
+			prop_type = p.type
+			found = true
+			break
+	if not found:
+		return _err(-32602, "property not found on %s: %s" % [node.get_class(), property_name])
+
+	return _ok({
+		"node_path": node_path,
+		"property": property_name,
+		"value": node.get(property_name),
+		"type": type_string(prop_type),
+	})
+
+
+# scene.capture_screenshot — save a PNG of what the editor is currently showing
+# for the open scene. Captures the appropriate editor viewport (2D for 2D/Control
+# root nodes, 3D for Node3D roots). Includes the editor's grid/gizmos — this is
+# "what the user sees" rather than a clean render, which is actually useful for
+# the agent to spot layout problems.
+# Params: {output?: "res://screenshot.png"}
+# Returns: {path, width, height}
+static func capture_screenshot(params: Dictionary) -> Dictionary:
+	var output_path: String = params.get("output", "")
+
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return _err(-32001, "no scene open — open one first with scene.open")
+
+	var viewport: SubViewport
+	if root is Node3D:
+		viewport = EditorInterface.get_editor_viewport_3d(0)
+	else:
+		viewport = EditorInterface.get_editor_viewport_2d()
+	if viewport == null:
+		return _err(-32001, "could not obtain editor viewport")
+
+	var tex := viewport.get_texture()
+	if tex == null:
+		return _err(-32001, "viewport has no texture yet (try again after the editor renders a frame)")
+	var img := tex.get_image()
+	if img == null or img.is_empty():
+		return _err(-32001, "failed to capture image from viewport")
+
+	if output_path == "":
+		var base: String = "screenshot"
+		if root.scene_file_path != "":
+			base = root.scene_file_path.get_file().get_basename()
+		output_path = "res://.godot/agent_tools/%s.png" % base
+
+	var dir_path := output_path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(dir_path):
+		var derr := DirAccess.make_dir_recursive_absolute(dir_path)
+		if derr != OK:
+			return _err(-32001, "mkdir failed: %d" % derr)
+
+	var save_err := img.save_png(output_path)
+	if save_err != OK:
+		return _err(-32001, "save_png failed: %d" % save_err)
+
+	return _ok({
+		"path": output_path,
+		"width": img.get_width(),
+		"height": img.get_height(),
+		"note": "clean viewport capture (no editor grid/gizmos); empty scenes render as the viewport background color",
+	})
+
+
+# scene.duplicate_node — clone a node (with its descendants) into the currently-edited scene.
+# Owner is set recursively so the duplicated subtree serializes with the scene.
+# Params: {node_path, new_name?, parent_path?: same parent}
+static func duplicate_node(params: Dictionary) -> Dictionary:
+	var node_path: String = params.get("node_path", "")
+	var new_name: String = params.get("new_name", "")
+	var parent_path: String = params.get("parent_path", "")
+	if node_path == "":
+		return _err(-32602, "missing 'node_path'")
+	if node_path == ".":
+		return _err(-32602, "cannot duplicate scene root")
+
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return _err(-32001, "no scene open")
+	var src: Node = root.get_node_or_null(node_path)
+	if src == null:
+		return _err(-32001, "node not found: %s" % node_path)
+
+	# DUPLICATE_SIGNALS | DUPLICATE_GROUPS | DUPLICATE_SCRIPTS — default flags.
+	var copy: Node = src.duplicate(7)
+	if copy == null:
+		return _err(-32001, "duplicate() failed")
+
+	var parent: Node = src.get_parent() if parent_path == "" else root.get_node_or_null(parent_path)
+	if parent == null:
+		return _err(-32001, "parent not found: %s" % parent_path)
+	parent.add_child(copy)
+	if new_name != "":
+		copy.name = new_name
+	_set_owner_recursive(copy, root)
+	EditorInterface.mark_scene_as_unsaved()
+	return _ok({
+		"source": node_path,
+		"node_path": String(root.get_path_to(copy)),
+		"name": String(copy.name),
+	})
+
+
+static func _set_owner_recursive(node: Node, owner: Node) -> void:
+	node.owner = owner
+	for child in node.get_children():
+		_set_owner_recursive(child, owner)
 
 
 # scene.current — describe the currently-edited scene, or {open: false} if none.

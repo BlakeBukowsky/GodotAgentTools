@@ -92,6 +92,21 @@ const TOOLS = [
     },
   },
   {
+    name: "scene_duplicate_node",
+    method: "scene.duplicate_node",
+    description:
+      "Clone a node (with descendants) in the currently-edited scene. Owner is set recursively so the duplicated subtree serializes. Defaults to adding under the source's parent; override with parent_path.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path"],
+      properties: {
+        node_path: { type: "string", description: "Source node to clone." },
+        new_name: { type: "string", description: "Name for the copy; defaults to auto-generated '<name>2' style." },
+        parent_path: { type: "string", description: "Destination parent; defaults to the source's parent." },
+      },
+    },
+  },
+  {
     name: "scene_reparent",
     method: "scene.reparent",
     description:
@@ -122,6 +137,20 @@ const TOOLS = [
     },
   },
   {
+    name: "scene_get_property",
+    method: "scene.get_property",
+    description:
+      "Read a property from a node in the currently-edited scene. Mirror of scene_set_property — useful for 'what's the current value?' queries without dumping the whole tree.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path", "property"],
+      properties: {
+        node_path: { type: "string" },
+        property: { type: "string" },
+      },
+    },
+  },
+  {
     name: "scene_open",
     method: "scene.open",
     description: "Open a scene in the editor so subsequent scene.* calls target it.",
@@ -146,6 +175,21 @@ const TOOLS = [
     method: "scene.current",
     description: "Describe the currently-edited scene, or return {open: false} if none is open.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "scene_capture_screenshot",
+    method: "scene.capture_screenshot",
+    description:
+      "Save a PNG of the editor viewport for the open scene (2D or 3D selected automatically). Clean capture — no editor grid/gizmos. Empty scenes render as the viewport background color. Default output: res://.godot/agent_tools/<scene-name>.png.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        output: {
+          type: "string",
+          description: "Optional output path (res://...). Defaults to res://.godot/agent_tools/<scene>.png.",
+        },
+      },
+    },
   },
   {
     name: "signal_connect",
@@ -281,7 +325,7 @@ const TOOLS = [
     name: "refs_rename",
     method: "refs.rename",
     description:
-      "Move a file and rewrite every path-form reference to it. The .uid and .import sidecars are moved too so UID-form references keep resolving. Supports dry_run to preview changes without touching disk. Writes to multiple files — review dry_run output first for anything non-trivial.",
+      "Move a file and rewrite every path-form reference to it. The .uid and .import sidecars are moved too so UID-form references keep resolving. Supports dry_run to preview changes without touching disk.",
     inputSchema: {
       type: "object",
       required: ["from", "to"],
@@ -289,6 +333,21 @@ const TOOLS = [
         from: { type: "string" },
         to: { type: "string" },
         overwrite: { type: "boolean", default: false },
+        dry_run: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "refs_rename_class",
+    method: "refs.rename_class",
+    description:
+      "Rename 'class_name X' to 'class_name Y' across the project — updates the defining script and every word-boundary reference in .gd / .tscn / .tres files. Best-effort (won't distinguish an X that happens to be a local variable); use dry_run first.",
+    inputSchema: {
+      type: "object",
+      required: ["from", "to"],
+      properties: {
+        from: { type: "string" },
+        to: { type: "string" },
         dry_run: { type: "boolean", default: false },
       },
     },
@@ -355,6 +414,12 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "editor_save_all_scenes",
+    method: "editor.save_all_scenes",
+    description: "Save every currently-open scene in the editor.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "docs_class_ref",
     method: "docs.class_ref",
     description:
@@ -417,6 +482,20 @@ const TOOLS = [
     },
   },
   {
+    name: "input_map_remove_event",
+    method: "input_map.remove_event",
+    description:
+      "Remove an event from an action by index. Call input_map_list first to see indices (events are listed in add order).",
+    inputSchema: {
+      type: "object",
+      required: ["action", "event_index"],
+      properties: {
+        action: { type: "string" },
+        event_index: { type: "integer" },
+      },
+    },
+  },
+  {
     name: "input_map_remove_action",
     method: "input_map.remove_action",
     description: "Delete a user-registered input action.",
@@ -445,76 +524,231 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "fs_list",
+    method: "fs.list",
+    description:
+      "Enumerate project files by type with optional glob filter. Types: all | scene | script | resource | shader | image | audio. Skips the agent_tools addon by default.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          enum: ["all", "scene", "script", "resource", "shader", "image", "audio"],
+          default: "all",
+        },
+        glob: { type: "string", description: "Optional case-insensitive glob, e.g. 'res://scenes/**/*.tscn'." },
+        include_addons: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "animation_list",
+    method: "animation.list",
+    description: "List animations on an AnimationPlayer node with their tracks.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path"],
+      properties: { node_path: { type: "string" } },
+    },
+  },
+  {
+    name: "animation_add_animation",
+    method: "animation.add_animation",
+    description: "Create an empty animation in the player's library. Use animation_add_value_track to populate it.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path", "name"],
+      properties: {
+        node_path: { type: "string" },
+        name: { type: "string" },
+        length: { type: "number", default: 1.0 },
+        library: { type: "string", default: "", description: "Library name; '' is the default library." },
+      },
+    },
+  },
+  {
+    name: "animation_remove_animation",
+    method: "animation.remove_animation",
+    description: "Delete an animation from an AnimationPlayer.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path", "name"],
+      properties: {
+        node_path: { type: "string" },
+        name: { type: "string" },
+        library: { type: "string", default: "" },
+      },
+    },
+  },
+  {
+    name: "animation_add_value_track",
+    method: "animation.add_value_track",
+    description:
+      "Add a value track to an animation that animates a property on a target node. target_node is resolved relative to the AnimationPlayer's root. Auto-extends the animation's length if keyframes go past it.",
+    inputSchema: {
+      type: "object",
+      required: ["node_path", "animation", "target_node", "property", "keyframes"],
+      properties: {
+        node_path: { type: "string", description: "AnimationPlayer node path." },
+        animation: { type: "string", description: "Animation name — use 'lib/anim' for non-default libraries." },
+        target_node: { type: "string", description: "NodePath to animated node, relative to the player's root." },
+        property: { type: "string", description: "Property name to animate." },
+        keyframes: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["time", "value"],
+            properties: {
+              time: { type: "number" },
+              value: { description: "Property value at this time." },
+              easing: { type: "number", default: 1.0, description: "Transition curve; 1.0 = linear." },
+            },
+          },
+        },
+      },
+    },
+  },
 ];
 
 const BY_NAME = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
 
-function callGodot(method, params) {
-  return new Promise((resolve, reject) => {
-    const socket = new net.Socket();
-    let buffer = "";
-    let settled = false;
+// Persistent Godot TCP client. One socket reused across tool calls; outstanding
+// requests are tracked by id so multiple in-flight calls don't interleave data.
+class GodotClient {
+  constructor(host, port) {
+    this.host = host;
+    this.port = port;
+    this.socket = null;
+    this.buffer = "";
+    this.pending = new Map(); // id -> { resolve, reject, timer }
+    this.nextId = 0;
+    this.connecting = null;
+  }
 
-    const settle = (fn, arg) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        socket.end();
-      } catch {}
-      fn(arg);
-    };
+  async _ensureConnected() {
+    if (this.socket && !this.socket.destroyed) return;
+    if (this.connecting) return this.connecting;
 
-    const timer = setTimeout(
-      () => settle(reject, new Error(`Godot tool '${method}' timed out after ${TIMEOUT_MS}ms`)),
-      TIMEOUT_MS
-    );
+    this.connecting = new Promise((resolve, reject) => {
+      const s = new net.Socket();
+      s.setEncoding("utf8");
+      s.setNoDelay(true);
 
-    socket.setEncoding("utf8");
+      const onConnect = () => {
+        s.removeListener("error", onErrorPreConnect);
+        this.socket = s;
+        this.connecting = null;
+        resolve();
+      };
 
-    socket.on("data", (data) => {
-      buffer += data;
-      const nl = buffer.indexOf("\n");
-      if (nl < 0) return;
-      const line = buffer.slice(0, nl);
-      try {
-        const resp = JSON.parse(line);
-        if (resp.error) {
-          settle(
-            reject,
-            new Error(`Godot error ${resp.error.code}: ${resp.error.message}`)
-          );
+      const onErrorPreConnect = (e) => {
+        this.connecting = null;
+        if (e.code === "ECONNREFUSED") {
+          reject(new Error(
+            `Godot editor not reachable on ${this.host}:${this.port}. ` +
+            `Open the project in the Godot editor with the 'Agent Tools' plugin enabled.`
+          ));
         } else {
-          settle(resolve, resp.result);
+          reject(e);
         }
+      };
+
+      s.once("connect", onConnect);
+      s.once("error", onErrorPreConnect);
+
+      s.on("data", (data) => this._onData(data));
+      s.on("error", (e) => this._onFatalError(e));
+      s.on("close", () => this._onClose());
+
+      s.connect(this.port, this.host);
+    });
+
+    return this.connecting;
+  }
+
+  call(method, params) {
+    const id = ++this.nextId;
+    return new Promise(async (resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          reject(new Error(`Godot tool '${method}' timed out after ${TIMEOUT_MS}ms`));
+        }
+      }, TIMEOUT_MS);
+
+      this.pending.set(id, { resolve, reject, timer });
+
+      try {
+        await this._ensureConnected();
       } catch (e) {
-        settle(reject, e);
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(e);
+        return;
       }
-    });
 
-    socket.on("error", (e) => {
-      if (e.code === "ECONNREFUSED") {
-        settle(
-          reject,
-          new Error(
-            `Godot editor not reachable on ${HOST}:${PORT}. Open the project in the Godot editor with the 'Agent Tools' plugin enabled.`
-          )
-        );
+      const line = JSON.stringify({ id, method, params: params || {} }) + "\n";
+      this.socket.write(line);
+    });
+  }
+
+  _onData(data) {
+    this.buffer += data;
+    while (true) {
+      const nl = this.buffer.indexOf("\n");
+      if (nl < 0) break;
+      const line = this.buffer.slice(0, nl);
+      this.buffer = this.buffer.slice(nl + 1);
+      if (!line) continue;
+
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue; // ignore malformed lines — shouldn't happen
+      }
+
+      const pending = this.pending.get(msg.id);
+      if (!pending) continue;
+      this.pending.delete(msg.id);
+      clearTimeout(pending.timer);
+
+      if (msg.error) {
+        pending.reject(new Error(`Godot error ${msg.error.code}: ${msg.error.message}`));
       } else {
-        settle(reject, e);
+        pending.resolve(msg.result);
       }
-    });
+    }
+  }
 
-    socket.on("end", () => settle(reject, new Error("Godot closed the connection before responding")));
+  _onFatalError(e) {
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(e);
+    }
+    this.pending.clear();
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = null;
+    }
+  }
 
-    socket.connect(PORT, HOST, () => {
-      socket.write(JSON.stringify({ id: 1, method, params: params || {} }) + "\n");
-    });
-  });
+  _onClose() {
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(new Error("Godot closed the connection"));
+    }
+    this.pending.clear();
+    this.socket = null;
+    this.buffer = "";
+  }
 }
 
+const client = new GodotClient(HOST, PORT);
+
 const server = new Server(
-  { name: "godot-agent-tools", version: "0.1.0" },
+  { name: "godot-agent-tools", version: "0.2.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -535,7 +769,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     };
   }
   try {
-    const result = await callGodot(tool.method, req.params.arguments || {});
+    const result = await client.call(tool.method, req.params.arguments || {});
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };

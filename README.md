@@ -2,7 +2,7 @@
 
 Let coding agents (Claude Code, Cursor, Cline, Windsurf, Claude Desktop, etc.) work inside your Godot project safely — editing scenes, wiring signals, creating resources, validating references, and running headless smoke tests through the editor's real APIs instead of hand-editing `.tscn` / `.tres` / `project.godot` as text.
 
-**32 tools** across 11 namespaces. Works with any MCP-capable agent. Godot 4.3+.
+**43 tools** across 12 namespaces. Works with any MCP-capable agent. Godot 4.3+.
 
 ---
 
@@ -265,21 +265,23 @@ run_scene_headless  path=res://Main.tscn quit_after_seconds=1
 
 ## Tool catalog
 
-**32 tools** across 11 namespaces:
+**43 tools** across 12 namespaces:
 
 | Namespace | Tools |
 |---|---|
-| `scene` | `new`, `open`, `current`, `save`, `inspect`, `add_node`, `remove_node`, `reparent`, `set_property`, `instance_packed` |
+| `scene` | `new`, `open`, `current`, `save`, `inspect`, `add_node`, `remove_node`, `reparent`, `duplicate_node`, `set_property`, `get_property`, `instance_packed`, `capture_screenshot` |
 | `signal` | `connect`, `disconnect`, `list` |
 | `script` | `create`, `attach` |
 | `resource` | `create`, `set_property` |
-| `refs` | `validate_project`, `find_usages`, `rename` |
+| `refs` | `validate_project`, `find_usages`, `rename`, `rename_class` |
 | `project` | `get_setting`, `set_setting` |
 | `autoload` | `add`, `remove`, `list` |
-| `input_map` | `add_action`, `add_event`, `list`, `remove_action` |
+| `input_map` | `add_action`, `add_event`, `list`, `remove_action`, `remove_event` |
+| `animation` | `list`, `add_animation`, `remove_animation`, `add_value_track` |
 | `docs` | `class_ref` |
+| `fs` | `list` |
 | `run` | `scene_headless` |
-| `editor` | `reload_filesystem` |
+| `editor` | `reload_filesystem`, `save_all_scenes` |
 
 Full JSON schemas live in [`mcp/server.mjs`](mcp/server.mjs).
 
@@ -290,6 +292,9 @@ Full JSON schemas live in [`mcp/server.mjs`](mcp/server.mjs).
 - **`signal.connect`** validates that the signal exists on the source, the method exists on the target, and arity matches — before persisting the connection.
 - **`docs.class_ref`** returns a class's methods / properties / signals / constants straight from `ClassDB` so agents plan against real API, not hallucinated API.
 - **`run.scene_headless`** spawns a child `godot --headless` process and returns exit code + combined stdout/stderr — the only way to catch runtime errors the static validator can't see.
+- **`scene.capture_screenshot`** saves a PNG of the editor viewport (clean — no grid/gizmos) so agents can verify visual layout. Empty scenes render as the viewport background color.
+- **`refs.rename_class`** rewrites `class_name X` and every word-boundary reference across `.gd`/`.tscn`/`.tres`. Complements `refs.rename` (which is file-based).
+- **`animation.*`** manipulates `AnimationPlayer` resources — animations in `.tscn` text form are one of the least agent-friendly surfaces in Godot.
 
 ---
 
@@ -337,6 +342,14 @@ npm install
 # Then point your agent's MCP config at:
 # "command": "node", "args": ["/abs/path/to/GodotTools/mcp/server.mjs"]
 ```
+
+To smoke-test the plugin end-to-end (needs the editor running with plugin enabled):
+
+```bash
+node tests/smoke.mjs
+```
+
+Exercises ~25 tool calls covering create/read/update/delete flows, cleans up `res://__smoketest/` after itself, exits non-zero on the first failure.
 
 ---
 

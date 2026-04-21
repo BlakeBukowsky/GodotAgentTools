@@ -91,11 +91,22 @@ func _handle_line(peer: StreamPeerTCP, line: String) -> void:
 		return
 
 	var result: Dictionary = _registry.dispatch(method, params)
-	if result.has("error"):
+	# Guard against silent tool-module failures: when a tool's .gd file has a parse
+	# error, preload() returns null, calls on it produce no output, and dispatch
+	# returns its default {}. Surface that instead of sending {"result": null}.
+	if result.is_empty():
+		_send_error(peer, id, -32000,
+			"tool returned empty response — likely a parse error in the tool module. Check Godot's Output panel for the actual error.",
+			{"method": method})
+	elif result.has("error"):
 		var e: Dictionary = result.error
 		_send_error(peer, id, e.get("code", -32000), e.get("message", ""), e.get("data"))
+	elif result.has("data"):
+		_send_result(peer, id, result.data)
 	else:
-		_send_result(peer, id, result.get("data"))
+		_send_error(peer, id, -32000,
+			"tool returned malformed response (missing both 'data' and 'error')",
+			{"method": method})
 
 
 func _send_result(peer: StreamPeerTCP, id, data) -> void:

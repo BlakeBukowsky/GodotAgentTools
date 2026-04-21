@@ -7,16 +7,22 @@ static func add_action(params: Dictionary) -> Dictionary:
 	var action_name: String = params.get("name", "")
 	if action_name == "":
 		return _err(-32602, "missing 'name'")
+	var deadzone: float = float(params.get("deadzone", 0.5))
 	var key := "input/" + action_name
 	if ProjectSettings.has_setting(key):
 		return _err(-32602, "action already exists: %s" % action_name)
 	ProjectSettings.set_setting(key, {
-		"deadzone": float(params.get("deadzone", 0.5)),
+		"deadzone": deadzone,
 		"events": [],
 	})
 	var err := ProjectSettings.save()
 	if err != OK:
 		return _err(-32001, "save failed: %d" % err)
+	# Keep the runtime InputMap in sync with the on-disk project settings —
+	# ProjectSettings.save() only writes the file; it doesn't register actions
+	# with InputMap until editor restart.
+	if not InputMap.has_action(action_name):
+		InputMap.add_action(action_name, deadzone)
 	return _ok({"added": action_name})
 
 
@@ -49,41 +55,79 @@ static func add_event(params: Dictionary) -> Dictionary:
 	var err := ProjectSettings.save()
 	if err != OK:
 		return _err(-32001, "save failed: %d" % err)
+	# Sync InputMap so Input.is_action_pressed() etc. see the event without restart.
+	if InputMap.has_action(action_name):
+		InputMap.action_add_event(action_name, event)
 	return _ok({"action": action_name, "event": event_spec})
 
 
 # input_map.list — return registered input actions with their events.
 # Params: {include_builtins?: false}
-# Defaults to user-defined only (parses the [input] section of project.godot, which
-# contains only user overrides — Godot's ~90 ui_* builtins live in-memory). Pass
-# include_builtins:true to get everything via InputMap.
+# Defaults to user-defined only (parses the [input] section of project.godot,
+# which contains only user overrides — Godot's ~90 ui_* builtins live in-memory).
+# When include_builtins, falls back to InputMap which has the full union.
 static func list_actions(params: Dictionary) -> Dictionary:
 	var include_builtins: bool = params.get("include_builtins", false)
-	var names: Array = []
+	var items: Array = []
 
 	if include_builtins:
 		for a in InputMap.get_actions():
-			names.append(String(a))
+			var described: Array = []
+			for e in InputMap.action_get_events(a):
+				described.append(_describe_event(e))
+			items.append({
+				"name": String(a),
+				"deadzone": InputMap.action_get_deadzone(a),
+				"events": described,
+			})
 	else:
+		# Read straight from project.godot so newly-added actions show up even
+		# if they haven't been registered with the runtime InputMap yet.
 		var cf := ConfigFile.new()
 		var err := cf.load("res://project.godot")
 		if err == OK and cf.has_section("input"):
-			for k in cf.get_section_keys("input"):
-				names.append(k)
+			for action_name in cf.get_section_keys("input"):
+				var value: Dictionary = cf.get_value("input", action_name)
+				var described: Array = []
+				for e in value.get("events", []):
+					described.append(_describe_event(e))
+				items.append({
+					"name": action_name,
+					"deadzone": value.get("deadzone", 0.5),
+					"events": described,
+				})
 
-	var items: Array = []
-	for n in names:
-		if not InputMap.has_action(n):
-			continue  # action exists in project.godot but hasn't loaded (shouldn't happen)
-		var described: Array = []
-		for e in InputMap.action_get_events(n):
-			described.append(_describe_event(e))
-		items.append({
-			"name": n,
-			"deadzone": InputMap.action_get_deadzone(n),
-			"events": described,
-		})
 	return _ok({"actions": items})
+
+
+# input_map.remove_event — remove an event from an action by index.
+# Call input_map.list first to see indices; events are listed in the order they
+# were added.
+# Params: {action, event_index}
+static func remove_event(params: Dictionary) -> Dictionary:
+	var action_name: String = params.get("action", "")
+	if action_name == "":
+		return _err(-32602, "missing 'action'")
+	if not params.has("event_index"):
+		return _err(-32602, "missing 'event_index'")
+	var idx: int = int(params.event_index)
+	var key := "input/" + action_name
+	if not ProjectSettings.has_setting(key):
+		return _err(-32001, "action not found: %s" % action_name)
+	var current: Dictionary = ProjectSettings.get_setting(key)
+	var events_arr: Array = current.get("events", [])
+	if idx < 0 or idx >= events_arr.size():
+		return _err(-32602, "event_index %d out of range (0..%d)" % [idx, events_arr.size() - 1])
+	var removed_event = events_arr[idx]
+	events_arr.remove_at(idx)
+	current["events"] = events_arr
+	ProjectSettings.set_setting(key, current)
+	var err := ProjectSettings.save()
+	if err != OK:
+		return _err(-32001, "save failed: %d" % err)
+	if InputMap.has_action(action_name) and removed_event != null:
+		InputMap.action_erase_event(action_name, removed_event)
+	return _ok({"action": action_name, "removed_index": idx})
 
 
 # input_map.remove_action — delete a user-registered action.
@@ -98,6 +142,8 @@ static func remove_action(params: Dictionary) -> Dictionary:
 	var err := ProjectSettings.save()
 	if err != OK:
 		return _err(-32001, "save failed: %d" % err)
+	if InputMap.has_action(action_name):
+		InputMap.erase_action(action_name)
 	return _ok({"removed": action_name})
 
 

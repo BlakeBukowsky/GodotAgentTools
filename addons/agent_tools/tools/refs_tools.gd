@@ -238,6 +238,108 @@ static func rename(params: Dictionary) -> Dictionary:
 	})
 
 
+# refs.rename_class — rename `class_name X` to `class_name Y` and rewrite every
+# word-boundary reference to X across .gd / .tscn / .tres files. Best-effort:
+# won't rewrite an X that happens to be a local variable name (word boundary
+# alone isn't semantic analysis). Use dry_run first on anything non-trivial.
+# Params: {from, to, dry_run?: false}
+static func rename_class(params: Dictionary) -> Dictionary:
+	var from_name: String = params.get("from", "")
+	var to_name: String = params.get("to", "")
+	var dry_run: bool = params.get("dry_run", false)
+
+	if from_name == "" or to_name == "":
+		return _err(-32602, "missing 'from' or 'to'")
+	if not _is_valid_identifier(from_name):
+		return _err(-32602, "'from' is not a valid identifier: %s" % from_name)
+	if not _is_valid_identifier(to_name):
+		return _err(-32602, "'to' is not a valid identifier: %s" % to_name)
+	if from_name == to_name:
+		return _err(-32602, "'from' and 'to' are identical")
+
+	var defining_script := _find_class_definition(from_name)
+	if defining_script == "":
+		return _err(-32001, "no script found declaring class_name %s" % from_name)
+	if _find_class_definition(to_name) != "":
+		return _err(-32602, "class_name %s already exists" % to_name)
+
+	var files: Array = []
+	_walk("res://", ["gd", "tscn", "tres"], files)
+
+	var regex := RegEx.new()
+	regex.compile("\\b%s\\b" % from_name)
+
+	var edits: Array = []
+	for path in files:
+		if path.begins_with("res://addons/agent_tools/"):
+			continue
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var text := f.get_as_text()
+		f.close()
+		if regex.search(text) != null:
+			edits.append(path)
+
+	if dry_run:
+		return _ok({
+			"from": from_name,
+			"to": to_name,
+			"defining_script": defining_script,
+			"would_update": edits,
+		})
+
+	var updated: Array = []
+	for path in edits:
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var text := f.get_as_text()
+		f.close()
+		var new_text := regex.sub(text, to_name, true)
+		if new_text == text:
+			continue
+		var wf := FileAccess.open(path, FileAccess.WRITE)
+		if wf == null:
+			continue
+		wf.store_string(new_text)
+		wf.close()
+		updated.append(path)
+
+	EditorInterface.get_resource_filesystem().scan()
+	return _ok({
+		"from": from_name,
+		"to": to_name,
+		"defining_script": defining_script,
+		"updated": updated,
+	})
+
+
+static func _is_valid_identifier(s: String) -> bool:
+	var re := RegEx.new()
+	re.compile("^[A-Za-z_][A-Za-z0-9_]*$")
+	return re.search(s) != null
+
+
+static func _find_class_definition(class_name_val: String) -> String:
+	var files: Array = []
+	_walk("res://", ["gd"], files)
+	var re := RegEx.new()
+	re.compile("^\\s*class_name\\s+%s\\b" % class_name_val)
+	for path in files:
+		if path.begins_with("res://addons/agent_tools/"):
+			continue
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var text := f.get_as_text()
+		f.close()
+		for line in text.split("\n"):
+			if re.search(line) != null:
+				return path
+	return ""
+
+
 static func _ok(data) -> Dictionary:
 	return {"data": data}
 

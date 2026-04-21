@@ -16,6 +16,8 @@ func _enter_tree() -> void:
 	add_child(_server)
 	_server.start(DEFAULT_PORT)
 	print("[agent_tools] listening on 127.0.0.1:%d" % DEFAULT_PORT)
+	print("[agent_tools] If you haven't already, configure your MCP client (Claude Code, Cursor, Cline, etc.) to use these tools.")
+	print("[agent_tools] Setup guide: https://github.com/BlakeBukowsky/GodotTools#configure-your-agent")
 
 
 func _exit_tree() -> void:
