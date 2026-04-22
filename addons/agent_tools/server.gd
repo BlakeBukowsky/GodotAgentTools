@@ -16,9 +16,9 @@ func _init(registry) -> void:
 	_registry = registry
 
 
-func start(port: int) -> bool:
+func start(port: int, interface: String = "127.0.0.1") -> bool:
 	_tcp = TCPServer.new()
-	var err := _tcp.listen(port, "127.0.0.1")
+	var err := _tcp.listen(port, interface)
 	if err != OK:
 		_tcp = null
 		return false
