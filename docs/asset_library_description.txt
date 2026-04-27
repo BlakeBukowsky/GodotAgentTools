@@ -1,0 +1,66 @@
+Opens the Godot editor to any MCP-capable coding agent — Claude Code, Claude Desktop, Cursor, Cline, Windsurf, Continue, Zed, and more. 70 tools plus 6 MCP Resources let the agent edit scenes, wire signals, create and style resources, patch scripts with parse-check rollback, validate project-wide references, run scripted-input gameplay tests with GUT/GdUnit4, capture screenshots and log output from live running games, measure runtime performance, and more — all through the editor's real APIs instead of hand-editing .tscn/.tres/project.godot files (which is fragile because of UIDs, sub-resource IDs, and signal connection blocks).
+
+SETUP REQUIRED AFTER INSTALL
+
+Enabling the plugin is not enough — you also need to configure your MCP client to talk to it. Full per-client instructions (Claude Code, Claude Desktop, Cursor, Windsurf, Cline, VS Code, Continue, Zed) are in the README:
+
+https://github.com/BlakeBukowsky/GodotTools#configure-your-agent
+
+The MCP bridge is published to npm as godot-agent-tools-mcp. For most clients the config snippet is:
+
+  command: npx
+  args:    ["-y", "godot-agent-tools-mcp"]
+
+Once one client is working, you can call client.configure from it to automatically set up others (Claude Code, Claude Desktop, Cursor, Windsurf, Continue, VS Code project) without hand-editing config files.
+
+VS GODOT AI (ALTERNATIVE PLUGIN)
+
+Godot AI (https://github.com/Godot-AI/godot-ai) is the most established plugin in the same space (120+ tools). Both cover the core ground — scene/node edits, scripts, signals, themes, animation, input map, autoloads, test integration, live-game bridge, performance monitors, batch execution, MCP Resources, multi-editor session routing, and MCP client auto-config.
+
+Godot AI emphasizes breadth — named tools for common editor-setup recipes across cameras, materials, audio, particles, animation presets, and more.
+
+Agent Tools doesn't ship those named presets. Every tool's JSON schema sits in the agent's context window at tool-list time, and preset tools are thin wrappers around patterns the agent can already compose via scene.set_property + resource.call_method + docs.class_ref — patterns agents reach for rarely in practice. Keeping the surface smaller leaves more context for tools that aren't otherwise expressible: scripted-input headless runs, project-wide reference integrity, ClassDB introspection, and user:// filesystem access.
+
+Both speak MCP. You can configure both simultaneously under different names.
+
+WHAT YOU GET (70 TOOLS)
+
+scene: new, open, save, current, inspect, add_node, build_tree, remove_node, reparent, duplicate_node, set_property, get_property, call_method, instance_packed, capture_screenshot
+signal: connect, disconnect, list
+script: create, attach, patch (parse-checked with auto-rollback)
+resource: create, set_property, call_method
+refs: validate_project, find_usages, rename, rename_class
+project: get_setting, set_setting
+autoload: add, remove, list
+input_map: add_action, add_event, remove_event, list, remove_action
+animation: list, add_animation, remove_animation, add_value_track
+docs: class_ref (query any Godot class's methods/properties/signals from ClassDB)
+fs: list, read_text, write_text
+user_fs: read, list (save files, custom-level JSON in user://)
+run: scene_headless (input simulation, multi-frame screenshots, state dump, seed, structured errors)
+editor: reload_filesystem, save_all_scenes, state, selection_get, selection_set, game_screenshot
+logs: read, clear (live game print / push_error / push_warning)
+performance: monitors (FPS, memory, draw calls, node counts)
+test: run (GUT / GdUnit4 with structured pass/fail per file+line)
+physics: autofit_collision_shape_2d (rectangle / circle / capsule to Sprite bounds)
+theme: set_color, set_constant, set_font_size, set_stylebox_flat
+client: list, configure, remove (auto-setup for 8 MCP clients)
+batch: execute (multiple calls per round-trip)
+session: list, activate (multi-editor routing by PID)
+
+Plus 6 MCP Resources: godot://editor/state, scene/current, scene/hierarchy, selection/current, logs/recent, performance/monitors.
+
+WHY THIS OVER HAND-EDITING
+
+.tscn, .tres, and project.godot are Godot-specific text formats that break silently when AI agents edit them as plain text. UIDs desync, sub-resource IDs collide, signal connections dangle, inherited-scene overrides malform. This plugin routes every write through Godot's own PackedScene, ResourceSaver, ClassDB, and ResourceUID APIs so round-tripping stays clean.
+
+REQUIREMENTS
+
+Godot 4.3+ (developed against 4.6)
+Node.js 18+ for the MCP bridge (npx fetches it automatically on first use)
+Any MCP-capable agent
+
+LICENSE
+
+MIT. Source, issues, and full documentation:
+https://github.com/BlakeBukowsky/GodotTools
