@@ -10,6 +10,9 @@ const PORT_SETTING := "agent_tools/port"
 const BRIDGE_AUTOLOAD_NAME := "_MCPGameBridge"
 const BRIDGE_AUTOLOAD_PATH := "res://addons/agent_tools/runtime/game_bridge.gd"
 
+const DEFAULT_INTERFACE := "127.0.0.1"
+const INTERFACE_SETTING := "agent_tools/interface"
+
 var _server: Server
 var _registry: Registry
 var _bound_port: int = -1
@@ -21,6 +24,12 @@ func _enter_tree() -> void:
 	_server = Server.new(_registry)
 	add_child(_server)
 
+	# Interface resolution
+	# Defaults to 127.0.0.1, override with project.godot agent_tools/interface
+	var forced_interface := DEFAULT_INTERFACE
+	if ProjectSettings.has_setting(INTERFACE_SETTING):
+		forced_interface = ProjectSettings.get_setting(INTERFACE_SETTING)
+
 	# Port resolution:
 	#   1. If 'agent_tools/port' is set in project.godot, honor it strictly (fail if busy).
 	#   2. Otherwise try DEFAULT_PORT..PORT_RANGE_END and use the first free one.
@@ -30,20 +39,20 @@ func _enter_tree() -> void:
 		forced_port = int(ProjectSettings.get_setting(PORT_SETTING))
 
 	if forced_port != -1:
-		if _server.start(forced_port):
+		if _server.start(forced_port, forced_interface):
 			_bound_port = forced_port
 		else:
-			push_error("[agent_tools] configured port %d is busy. Either close the other process or change 'agent_tools/port' in project.godot." % forced_port)
+			push_error("[agent_tools] configured port %s:%d is busy. Either close the other process or change 'agent_tools/port' in project.godot." % [forced_interface, forced_port])
 	else:
 		for p in range(DEFAULT_PORT, PORT_RANGE_END + 1):
-			if _server.start(p):
+			if _server.start(p, forced_interface):
 				_bound_port = p
 				break
 		if _bound_port == -1:
-			push_error("[agent_tools] all ports %d-%d busy. Close other Godot editors running agent_tools, or set 'agent_tools/port' in project.godot." % [DEFAULT_PORT, PORT_RANGE_END])
+			push_error("[agent_tools] all ports %d-%d are busy on %s. Close other Godot editors running agent_tools, or set 'agent_tools/port' in project.godot." % [DEFAULT_PORT, PORT_RANGE_END, forced_interface])
 
 	if _bound_port != -1:
-		print("[agent_tools] listening on 127.0.0.1:%d" % _bound_port)
+		print("[agent_tools] listening on %s:%d" % [forced_interface, _bound_port])
 		print("[agent_tools] If you haven't already, configure your MCP client (Claude Code, Cursor, Cline, etc.) to use these tools.")
 		print("[agent_tools] Setup guide: https://github.com/BlakeBukowsky/GodotTools#configure-your-agent")
 		_write_session_registry()
